@@ -21,6 +21,7 @@ pub fn heartbeat(
         let device =
             rusty_libimobiledevice::idevice::Device::new(udid.clone(), true, Some(ip_addr), 0)
                 .unwrap();
+        println!("Device created, starting service");
         let hb_client = match rusty_libimobiledevice::services::heartbeat::HeartbeatClient::new(
             &device,
             "yurmom".to_string(),

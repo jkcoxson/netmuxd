@@ -1,7 +1,7 @@
 // jkcoxson
 // Handle raw packets
 
-use crate::{central_data::CentralData, raw_packet::RawPacket, response_builder};
+use crate::{central_data::CentralData, raw_packet::RawPacket};
 use plist_plus::Plist;
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
@@ -20,7 +20,25 @@ pub async fn cope(
     match packet_type.as_str() {
         "ListDevices" => {
             println!("Getting a list of devices");
-            let res = RawPacket::new(response_builder::list_devices(data).await, 1, 8, packet.tag);
+            let data = data.lock().await;
+            let mut device_list = Plist::new_array();
+            for i in &data.devices {
+                let mut to_push = Plist::new_dict();
+                to_push
+                    .dict_set_item("DeviceID", Plist::new_uint(i.1.device_id))
+                    .unwrap();
+                to_push
+                    .dict_set_item("MessageType", "Attached".into())
+                    .unwrap();
+                to_push
+                    .dict_set_item("Properties", i.1.try_into().unwrap())
+                    .unwrap();
+
+                device_list.array_append_item(to_push).unwrap();
+            }
+            let mut upper = Plist::new_dict();
+            upper.dict_set_item("DeviceList", device_list).unwrap();
+            let res = RawPacket::new(upper, 1, 8, packet.tag);
             println!("Sending: {:?}", res);
             let res: Vec<u8> = res.into();
             stream.write_all(&res).await.unwrap();

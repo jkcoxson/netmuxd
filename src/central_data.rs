@@ -1,6 +1,6 @@
 // jkcoxson
 
-use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf};
+use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::mpsc::Sender};
 
 use plist_plus::Plist;
 
@@ -19,7 +19,7 @@ pub struct Device {
     pub interface_index: u64,
     pub network_address: IpAddr,
     pub serial_number: String,
-    pub manual: bool,
+    pub heartbeat_handle: Option<Sender<()>>,
 }
 
 impl CentralData {
@@ -63,9 +63,15 @@ impl CentralData {
             interface_index: self.last_interface_index,
             network_address,
             serial_number: udid.clone(),
-            manual: true,
+            heartbeat_handle: None,
         };
         self.devices.insert(udid, dev);
+    }
+    pub fn remove_device(&mut self, udid: String) {
+        if !self.devices.contains_key(&udid) {
+            return;
+        }
+        self.devices.remove(&udid);
     }
     pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
@@ -156,7 +162,7 @@ impl Device {
         interface_index: u64,
         network_address: IpAddr,
         serial_number: String,
-        manual: bool,
+        handle: Option<Sender<()>>,
     ) -> Device {
         Device {
             connection_type,
@@ -165,7 +171,7 @@ impl Device {
             interface_index,
             network_address,
             serial_number,
-            manual,
+            heartbeat_handle: handle,
         }
     }
 }
@@ -214,7 +220,7 @@ impl TryFrom<Plist> for Device {
             interface_index,
             network_address,
             serial_number,
-            manual: true,
+            heartbeat_handle: None,
         })
     }
 }

@@ -1,0 +1,22 @@
+[package]
+name = "netmuxd"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+default-run = "netmuxd"
+
+[[bin]]
+name = "test"
+path = "src/test.rs"
+
+[[bin]]
+name = "passthrough"
+path = "src/passthrough.rs"
+
+[dependencies]
+tokio = { version = "*", features = [ "full" ] }
+colored = { version = "*" }
+rusty_libimobiledevice = { version = "*", path = "../rusty_libimobiledevice", features = [ "static" ] }
+plist_plus = { version = "*", features = [ "static" ], path = "../plist_plus" }

@@ -1,6 +1,9 @@
 // jkcoxson
 
-use crate::{central_data::CentralData, heartbeat};
+use crate::{
+    central_data::{CentralData, Device},
+    heartbeat,
+};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
@@ -39,13 +42,17 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
             let mut lock = data.lock().await;
             if let Ok(udid) = lock.get_udid(mac_addr.to_string()) {
                 println!("Found udid: {}", udid);
-                lock.add_device(
-                    udid.clone(),
-                    addr.to_string(),
-                    SERVICE_NAME.to_string(),
-                    "Network".to_string(),
-                );
-                heartbeat::heartbeat(udid, addr, data.clone());
+                let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
+                let device = Device {
+                    connection_type: "Network".to_string(),
+                    device_id: 0,
+                    service_name: SERVICE_NAME.to_string(),
+                    interface_index: 0,
+                    network_address: addr,
+                    serial_number: udid.to_string(),
+                    heartbeat_handle: Some(handle),
+                };
+                lock.devices.insert(udid.clone(), device);
             } else {
                 println!("No udid found, skipping");
             }

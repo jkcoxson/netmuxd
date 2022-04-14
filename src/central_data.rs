@@ -1,8 +1,9 @@
 // jkcoxson
 
-use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::mpsc::Sender};
+use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf};
 
 use plist_plus::Plist;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct CentralData {
     pub devices: HashMap<String, Device>,
@@ -19,7 +20,7 @@ pub struct Device {
     pub interface_index: u64,
     pub network_address: IpAddr,
     pub serial_number: String,
-    pub heartbeat_handle: Option<Sender<()>>,
+    pub heartbeat_handle: Option<UnboundedSender<()>>,
 }
 
 impl CentralData {
@@ -70,6 +71,9 @@ impl CentralData {
     pub fn remove_device(&mut self, udid: String) {
         if !self.devices.contains_key(&udid) {
             return;
+        }
+        if let Some(handle) = &self.devices.get(&udid).unwrap().heartbeat_handle {
+            handle.send(()).unwrap();
         }
         self.devices.remove(&udid);
     }
@@ -162,7 +166,7 @@ impl Device {
         interface_index: u64,
         network_address: IpAddr,
         serial_number: String,
-        handle: Option<Sender<()>>,
+        handle: Option<UnboundedSender<()>>,
     ) -> Device {
         Device {
             connection_type,

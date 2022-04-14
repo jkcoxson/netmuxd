@@ -21,11 +21,19 @@ pub fn heartbeat(
         let device =
             rusty_libimobiledevice::idevice::Device::new(udid.clone(), true, Some(ip_addr), 0)
                 .unwrap();
-        let hb_client = rusty_libimobiledevice::services::heartbeat::HeartbeatClient::new(
+        let hb_client = match rusty_libimobiledevice::services::heartbeat::HeartbeatClient::new(
             &device,
             "yurmom".to_string(),
-        )
-        .unwrap();
+        ) {
+            Ok(hb_client) => hb_client,
+            Err(e) => {
+                println!("Error creating heartbeat client: {:?}", e);
+                tokio::spawn(async move {
+                    remove_from_data(data, udid).await;
+                });
+                return;
+            }
+        };
         loop {
             match hb_client.receive(15000) {
                 Ok(plist) => match hb_client.send(plist) {

@@ -1,7 +1,7 @@
 // jkcoxson
 // Handle raw packets
 
-use crate::{central_data::CentralData, raw_packet::RawPacket};
+use crate::{central_data::CentralData, heartbeat, raw_packet::RawPacket};
 use plist_plus::Plist;
 use std::sync::Arc;
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
@@ -105,31 +105,32 @@ pub async fn instruction(
         .get_string_val()?;
     match packet_type.as_str() {
         "AddDevice" => {
-            println!("here 1: {:?}", packet.plist);
             let connection_type = packet
                 .plist
                 .clone()
                 .dict_get_item("ConnectionType")?
                 .get_string_val()?;
-            println!("here 2");
             let service_name = packet
                 .plist
                 .clone()
                 .dict_get_item("ServiceName")?
                 .get_string_val()?;
-            println!("here 3");
             let ip_address = packet
                 .plist
                 .clone()
                 .dict_get_item("IPAddress")?
                 .get_string_val()?;
-            println!("here 4");
             let udid = packet
                 .plist
                 .clone()
                 .dict_get_item("DeviceID")?
                 .get_string_val()?;
             let mut central_data = data.lock().await;
+            heartbeat::heartbeat(
+                udid.clone(),
+                ip_address.clone().parse().unwrap(),
+                data.clone(),
+            );
             central_data.add_device(udid, ip_address, service_name, connection_type);
 
             let mut p = Plist::new_dict();

@@ -1,14 +1,15 @@
 // jkcoxson
 
-use std::{io::Read, net::IpAddr, path::PathBuf};
+use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf};
 
 use plist_plus::Plist;
 
 pub struct CentralData {
-    pub devices: Vec<Device>,
+    pub devices: HashMap<String, Device>,
     pub last_index: u64,
     pub last_interface_index: u64,
     plist_storage: String,
+    known_mac_addresses: HashMap<String, String>,
 }
 
 pub struct Device {
@@ -18,6 +19,7 @@ pub struct Device {
     pub interface_index: u64,
     pub network_address: IpAddr,
     pub serial_number: String,
+    pub manual: bool,
 }
 
 impl CentralData {
@@ -34,10 +36,11 @@ impl CentralData {
             .to_string()
         };
         CentralData {
-            devices: Vec::new(),
+            devices: HashMap::new(),
             last_index: 0,
             last_interface_index: 0,
             plist_storage,
+            known_mac_addresses: HashMap::new(),
         }
     }
     pub fn add_device(
@@ -47,6 +50,9 @@ impl CentralData {
         service_name: String,
         connection_type: String,
     ) {
+        if self.devices.contains_key(&udid) {
+            return;
+        }
         let network_address = ip_address.parse().unwrap();
         self.last_index += 1;
         self.last_interface_index += 1;
@@ -56,9 +62,10 @@ impl CentralData {
             service_name,
             interface_index: self.last_interface_index,
             network_address,
-            serial_number: udid,
+            serial_number: udid.clone(),
+            manual: true,
         };
-        self.devices.push(dev);
+        self.devices.insert(udid, dev);
     }
     pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
@@ -90,6 +97,55 @@ impl CentralData {
         let buid = plist.dict_get_item("SystemBUID")?.get_string_val()?;
         Ok(buid)
     }
+
+    pub fn get_udid(&mut self, mac: String) -> Result<String, ()> {
+        if let Some(udid) = self.known_mac_addresses.get(&mac) {
+            return Ok(udid.to_string());
+        }
+        // Iterate through all files in the plist storage, loading them into memory
+        let path = PathBuf::from(self.plist_storage.clone());
+        for entry in std::fs::read_dir(path).unwrap() {
+            println!("Unwrapping...");
+            let entry = entry.unwrap();
+            println!("Reading pair data from {:?}", entry.path());
+            let path = entry.path();
+            if path.is_file() {
+                let mut file = std::fs::File::open(path.clone()).unwrap();
+                let mut contents = String::new();
+                let plist = match file.read_to_string(&mut contents) {
+                    Ok(_) => Plist::from_xml(contents).unwrap(),
+                    Err(e) => {
+                        println!("Error reading file: {:?}", e);
+                        let mut buf = vec![];
+                        file.read_to_end(&mut buf).unwrap();
+                        match Plist::from_memory(buf) {
+                            Ok(plist) => plist,
+                            Err(_) => {
+                                println!("Error reading file");
+                                continue;
+                            }
+                        }
+                    }
+                };
+                let mac_addr = match plist.dict_get_item("WiFiMACAddress") {
+                    Ok(item) => match item.get_string_val() {
+                        Ok(val) => val,
+                        Err(_) => continue,
+                    },
+                    Err(_) => continue,
+                };
+                println!("Adding {} to known mac addresses", mac_addr);
+                self.known_mac_addresses.insert(
+                    mac_addr,
+                    path.file_stem().unwrap().to_string_lossy().to_string(),
+                );
+            }
+        }
+        if let Some(udid) = self.known_mac_addresses.get(&mac) {
+            return Ok(udid.to_string());
+        }
+        Err(())
+    }
 }
 
 impl Device {
@@ -100,6 +156,7 @@ impl Device {
         interface_index: u64,
         network_address: IpAddr,
         serial_number: String,
+        manual: bool,
     ) -> Device {
         Device {
             connection_type,
@@ -108,6 +165,7 @@ impl Device {
             interface_index,
             network_address,
             serial_number,
+            manual,
         }
     }
 }
@@ -156,6 +214,7 @@ impl TryFrom<Plist> for Device {
             interface_index,
             network_address,
             serial_number,
+            manual: true,
         })
     }
 }

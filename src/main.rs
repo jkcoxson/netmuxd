@@ -8,6 +8,7 @@ use crate::handle::{cope, instruction};
 
 mod central_data;
 mod handle;
+mod mdns;
 mod raw_packet;
 mod response_builder;
 
@@ -42,6 +43,11 @@ async fn main() {
     }
 
     let data = Arc::new(Mutex::new(central_data::CentralData::new(plist_storage)));
+    let data_clone = data.clone();
+    tokio::spawn(async move {
+        mdns::discover(data_clone).await;
+        println!("mDNS discovery stopped");
+    });
 
     // Create TcpListener
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))

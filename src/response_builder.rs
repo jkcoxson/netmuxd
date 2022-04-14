@@ -13,13 +13,13 @@ pub async fn list_devices(data: Arc<Mutex<CentralData>>) -> Plist {
     for i in &data.devices {
         let mut to_push = Plist::new_dict();
         to_push
-            .dict_set_item("DeviceID", Plist::new_uint(i.device_id))
+            .dict_set_item("DeviceID", Plist::new_uint(i.1.device_id))
             .unwrap();
         to_push
             .dict_set_item("MessageType", "Attached".into())
             .unwrap();
         to_push
-            .dict_set_item("Properties", i.try_into().unwrap())
+            .dict_set_item("Properties", i.1.try_into().unwrap())
             .unwrap();
 
         device_list.array_append_item(to_push).unwrap();

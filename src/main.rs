@@ -161,6 +161,10 @@ async fn main() {
                 if size == 0 {
                     return;
                 }
+                if size < 20 {
+                    // Probably a bad packet
+                    return;
+                }
                 let buffer = &buf[0..size];
 
                 let parsed: raw_packet::RawPacket = buffer.into();

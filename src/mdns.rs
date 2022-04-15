@@ -42,7 +42,7 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
             let mut lock = data.lock().await;
             if let Ok(udid) = lock.get_udid(mac_addr.to_string()) {
                 println!("Found udid: {}", udid);
-                let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
+                // let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
                 let device = Device {
                     connection_type: "Network".to_string(),
                     device_id: 0,
@@ -50,7 +50,7 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
                     interface_index: 0,
                     network_address: addr,
                     serial_number: udid.to_string(),
-                    heartbeat_handle: Some(handle),
+                    heartbeat_handle: None, //Some(handle),
                 };
                 lock.devices.insert(udid.clone(), device);
             } else {

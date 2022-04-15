@@ -1,5 +1,6 @@
 // jkcoxson
 
+use rusty_libimobiledevice::{idevice, services::heartbeat::HeartbeatClient};
 use std::{
     net::IpAddr,
     sync::{Arc, Mutex},
@@ -18,14 +19,9 @@ pub fn heartbeat(
     let pls_stop_clone = pls_stop.clone();
     tokio::task::spawn_blocking(move || {
         println!("Starting heartbeat for {}", udid);
-        let device =
-            rusty_libimobiledevice::idevice::Device::new(udid.clone(), true, Some(ip_addr), 0)
-                .unwrap();
+        let device = idevice::Device::new(udid.clone(), true, Some(ip_addr), 0).unwrap();
         println!("Device created, starting service");
-        let hb_client = match rusty_libimobiledevice::services::heartbeat::HeartbeatClient::new(
-            &device,
-            "yurmom".to_string(),
-        ) {
+        let hb_client = match HeartbeatClient::new(&device, "yurmom".to_string()) {
             Ok(hb_client) => hb_client,
             Err(e) => {
                 println!("Error creating heartbeat client: {:?}", e);
@@ -46,8 +42,8 @@ pub fn heartbeat(
                         return;
                     }
                 },
-                Err(_) => {
-                    println!("Failed to receive heartbeat, removing device");
+                Err(e) => {
+                    println!("Failed to receive heartbeat: {:?}, removing device", e);
                     tokio::spawn(async move {
                         remove_from_data(data, udid).await;
                     });

@@ -1,6 +1,14 @@
 # netmuxd
 
-To change the daemon to netmuxd, change the environment variable to something like this
-```bash
-export USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015
-```
+A replacement/addition to usbmuxd which is a reimplementation of Apple's usbmuxd on MacOS
+
+# Building
+Clone [rusty_libimobiledevice](https://github.com/jkcoxson/rusty_libimobiledevice), [plist_plus](https://github.com/jkcoxson/plist_plus) 
+and make sure both are buildable. Instructions are in their respective readme's.
+
+Run ``cargo build`` to generate binaries. It is located at ``target/debug/netmuxd``
+
+Good luck, you'll need it
+
+# Usage
+Run with root, options can be listed with ``-help``

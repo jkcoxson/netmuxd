@@ -4,14 +4,10 @@
 use crate::{central_data::CentralData, heartbeat, raw_packet::RawPacket};
 use plist_plus::Plist;
 use std::sync::Arc;
-use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
+use tokio::sync::Mutex;
 
 /// Handles usbmuxd's requests
-pub async fn cope(
-    packet: RawPacket,
-    mut stream: TcpStream,
-    data: Arc<Mutex<CentralData>>,
-) -> Result<(), ()> {
+pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Option<Vec<u8>>, ()> {
     let packet_type = packet
         .plist
         .clone()
@@ -39,7 +35,7 @@ pub async fn cope(
             upper.dict_set_item("DeviceList", device_list).unwrap();
             let res = RawPacket::new(upper, 1, 8, packet.tag);
             let res: Vec<u8> = res.into();
-            stream.write_all(&res).await.unwrap();
+            return Ok(Some(res));
         }
         "Listen" => {
             // noop
@@ -55,7 +51,7 @@ pub async fn cope(
             ) {
                 Ok(pair_file) => pair_file,
                 Err(_) => {
-                    return Ok(());
+                    return Ok(None);
                 }
             };
 
@@ -64,7 +60,7 @@ pub async fn cope(
 
             let res = RawPacket::new(p, 1, 8, packet.tag);
             let res: Vec<u8> = res.into();
-            stream.write_all(&res).await.unwrap();
+            return Ok(Some(res));
         }
         "ReadBUID" => {
             let lock = data.lock().await;
@@ -75,21 +71,20 @@ pub async fn cope(
 
             let res = RawPacket::new(p, 1, 8, packet.tag);
             let res: Vec<u8> = res.into();
-            stream.write_all(&res).await.unwrap();
+            return Ok(Some(res));
         }
         _ => {
             println!("Unknown packet type: {}", packet_type);
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Handles netmuxd specific requests
 pub async fn instruction(
     packet: RawPacket,
-    mut stream: TcpStream,
     data: Arc<Mutex<CentralData>>,
-) -> Result<(), ()> {
+) -> Result<Option<Vec<u8>>, ()> {
     let packet_type = packet
         .plist
         .clone()
@@ -128,11 +123,11 @@ pub async fn instruction(
             let mut p = Plist::new_dict();
             p.dict_set_item("Result", "OK".into())?;
             let res: Vec<u8> = RawPacket::new(p, 1, 8, packet.tag).into();
-            stream.write_all(&res).await.unwrap();
+            return Ok(Some(res));
         }
         _ => {
             println!("Unknown packet type: {}", packet_type);
         }
     }
-    Ok(())
+    Ok(None)
 }

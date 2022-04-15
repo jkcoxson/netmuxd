@@ -19,13 +19,10 @@ pub fn heartbeat(
     let pls_stop_clone = pls_stop.clone();
     tokio::task::spawn_blocking(move || {
         let device = idevice::Device::new(udid.clone(), true, Some(ip_addr), 0).unwrap();
-        let hb_client = match HeartbeatClient::new(&device, "yurmom".to_string()) {
+        let hb_client = match HeartbeatClient::new(&device, "netmuxd".to_string()) {
             Ok(hb_client) => hb_client,
             Err(e) => {
-                println!(
-                    "\nERROR creating heartbeat client for udid {}: {:?}\n",
-                    udid, e
-                );
+                println!("ERROR creating heartbeat client for udid {}: {:?}", udid, e);
                 tokio::spawn(async move {
                     remove_from_data(data, udid).await;
                 });
@@ -51,7 +48,7 @@ pub fn heartbeat(
                     heartbeat_tries += 1;
                     if heartbeat_tries > 5 {
                         println!(
-                            "\nERROR Failed to receive heartbeat 5 times, removing device {}\n",
+                            "Failed to receive heartbeat 5 times, device disconnected. Removing device {}",
                             udid
                         );
                         tokio::spawn(async move {

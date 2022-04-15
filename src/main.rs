@@ -46,7 +46,7 @@ async fn main() {
     let data_clone = data.clone();
     tokio::spawn(async move {
         mdns::discover(data_clone).await;
-        println!("mDNS discovery stopped");
+        println!("mDNS discovery stopped, how the heck did you break this");
     });
 
     // Create TcpListener
@@ -58,12 +58,8 @@ async fn main() {
 
     loop {
         let (mut socket, _) = match listener.accept().await {
-            Ok(s) => {
-                println!("Accepted connection");
-                s
-            }
-            Err(e) => {
-                println!("Error accepting connection: {}", e);
+            Ok(s) => s,
+            Err(_) => {
                 continue;
             }
         };
@@ -73,20 +69,16 @@ async fn main() {
         let size = match socket.read(&mut buf).await {
             Ok(s) => s,
             Err(e) => {
-                println!("Error reading from socket: {}", e);
                 break;
             }
         };
         if size == 0 {
-            println!("Client disconnected");
             break;
         }
-        println!("Received {} bytes", size);
         let buffer = &buf[0..size];
 
         let parsed: raw_packet::RawPacket = buffer.into();
 
-        println!("Parsed: {:?}", parsed);
         if parsed.message == 69 && parsed.tag == 69 {
             instruction(parsed, socket, cloned_data.clone())
                 .await

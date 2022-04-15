@@ -23,38 +23,40 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
     while let Some(Ok(response)) = stream.next().await {
         let addr = response.records().filter_map(self::to_ip_addr).next();
 
-        if let Some(addr) = addr {
-            println!("Found iDevice at {}", addr);
+        if let Some(mut addr) = addr {
             let mut mac_addr = None;
             for i in response.records() {
+                match i.kind {
+                    RecordKind::A(addr4) => addr = std::net::IpAddr::V4(addr4),
+                    _ => (),
+                }
                 if i.name.contains(SERVICE_NAME) && i.name.contains("@") {
                     mac_addr = Some(i.name.split("@").collect::<Vec<&str>>()[0]);
-                    println!("Found mac address: {}", mac_addr.unwrap());
                 }
             }
 
             // Look through paired devices for mac address
             if mac_addr.is_none() {
-                println!("No mac address found, skipping");
                 continue;
             }
             let mac_addr = mac_addr.unwrap();
             let mut lock = data.lock().await;
             if let Ok(udid) = lock.get_udid(mac_addr.to_string()) {
-                println!("Found udid: {}", udid);
-                // let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
+                if lock.devices.contains_key(&udid) {
+                    continue;
+                }
+                println!("Adding device {}", udid);
+                let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
                 let device = Device {
                     connection_type: "Network".to_string(),
-                    device_id: 0,
+                    device_id: 200,
                     service_name: SERVICE_NAME.to_string(),
-                    interface_index: 0,
+                    interface_index: 300,
                     network_address: addr,
                     serial_number: udid.to_string(),
-                    heartbeat_handle: None, //Some(handle),
+                    heartbeat_handle: Some(handle),
                 };
                 lock.devices.insert(udid.clone(), device);
-            } else {
-                println!("No udid found, skipping");
             }
         }
     }

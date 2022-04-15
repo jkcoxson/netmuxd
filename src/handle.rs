@@ -19,7 +19,6 @@ pub async fn cope(
         .get_string_val()?;
     match packet_type.as_str() {
         "ListDevices" => {
-            println!("Getting a list of devices");
             let data = data.lock().await;
             let mut device_list = Plist::new_array();
             for i in &data.devices {
@@ -39,7 +38,6 @@ pub async fn cope(
             let mut upper = Plist::new_dict();
             upper.dict_set_item("DeviceList", device_list).unwrap();
             let res = RawPacket::new(upper, 1, 8, packet.tag);
-            println!("Sending: {:?}", res);
             let res: Vec<u8> = res.into();
             stream.write_all(&res).await.unwrap();
         }
@@ -48,7 +46,6 @@ pub async fn cope(
             // This is basically libusbmuxd saying "uh hello, where's my response?"
         }
         "ReadPairRecord" => {
-            println!("Reading pair data");
             let lock = data.lock().await;
             let pair_file = match lock.get_pairing_record(
                 packet
@@ -58,7 +55,6 @@ pub async fn cope(
             ) {
                 Ok(pair_file) => pair_file,
                 Err(_) => {
-                    println!("Error getting pairing record");
                     return Ok(());
                 }
             };
@@ -67,12 +63,10 @@ pub async fn cope(
             p.dict_set_item("PairRecordData", pair_file.into()).unwrap();
 
             let res = RawPacket::new(p, 1, 8, packet.tag);
-            println!("Sending: {:?}", res);
             let res: Vec<u8> = res.into();
             stream.write_all(&res).await.unwrap();
         }
         "ReadBUID" => {
-            println!("Reading BUID");
             let lock = data.lock().await;
             let buid = lock.get_buid()?;
 
@@ -80,7 +74,6 @@ pub async fn cope(
             p.dict_set_item("BUID", buid.into()).unwrap();
 
             let res = RawPacket::new(p, 1, 8, packet.tag);
-            println!("Sending: {:?}", res);
             let res: Vec<u8> = res.into();
             stream.write_all(&res).await.unwrap();
         }
@@ -97,7 +90,6 @@ pub async fn instruction(
     mut stream: TcpStream,
     data: Arc<Mutex<CentralData>>,
 ) -> Result<(), ()> {
-    println!("Getting message type");
     let packet_type = packet
         .plist
         .clone()

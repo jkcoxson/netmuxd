@@ -79,9 +79,7 @@ impl CentralData {
     }
     pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
-        println!("Reading pair data from {:?}", path);
         if !path.exists() {
-            println!("No pairing record found for {}", udid);
             return Err(());
         }
         // Read the file
@@ -92,9 +90,7 @@ impl CentralData {
     }
     pub fn get_buid(&self) -> Result<String, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join("SystemConfiguration.plist");
-        println!("Reading BUID data from {:?}", path);
         if !path.exists() {
-            println!("No BUID found");
             return Err(());
         }
         // Read the file to a string
@@ -115,9 +111,7 @@ impl CentralData {
         // Iterate through all files in the plist storage, loading them into memory
         let path = PathBuf::from(self.plist_storage.clone());
         for entry in std::fs::read_dir(path).unwrap() {
-            println!("Unwrapping...");
             let entry = entry.unwrap();
-            println!("Reading pair data from {:?}", entry.path());
             let path = entry.path();
             if path.is_file() {
                 let mut file = std::fs::File::open(path.clone()).unwrap();
@@ -131,7 +125,6 @@ impl CentralData {
                         match Plist::from_memory(buf) {
                             Ok(plist) => plist,
                             Err(_) => {
-                                println!("Error reading file");
                                 continue;
                             }
                         }
@@ -144,7 +137,6 @@ impl CentralData {
                     },
                     Err(_) => continue,
                 };
-                println!("Adding {} to known mac addresses", mac_addr);
                 self.known_mac_addresses.insert(
                     mac_addr,
                     path.file_stem().unwrap().to_string_lossy().to_string(),

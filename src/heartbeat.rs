@@ -18,23 +18,28 @@ pub fn heartbeat(
     let pls_stop = Arc::new(Mutex::new(false));
     let pls_stop_clone = pls_stop.clone();
     tokio::task::spawn_blocking(move || {
-        println!("Starting heartbeat for {}", udid);
         let device = idevice::Device::new(udid.clone(), true, Some(ip_addr), 0).unwrap();
-        println!("Device created, starting service");
         let hb_client = match HeartbeatClient::new(&device, "yurmom".to_string()) {
             Ok(hb_client) => hb_client,
             Err(e) => {
-                println!("Error creating heartbeat client: {:?}", e);
+                println!(
+                    "\nERROR creating heartbeat client for udid {}: {:?}\n",
+                    udid, e
+                );
                 tokio::spawn(async move {
                     remove_from_data(data, udid).await;
                 });
                 return;
             }
         };
+
+        let mut heartbeat_tries = 0;
         loop {
             match hb_client.receive(15000) {
                 Ok(plist) => match hb_client.send(plist) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        heartbeat_tries = 0;
+                    }
                     Err(_) => {
                         tokio::spawn(async move {
                             remove_from_data(data, udid).await;
@@ -42,12 +47,18 @@ pub fn heartbeat(
                         return;
                     }
                 },
-                Err(e) => {
-                    println!("Failed to receive heartbeat: {:?}, removing device", e);
-                    tokio::spawn(async move {
-                        remove_from_data(data, udid).await;
-                    });
-                    break;
+                Err(_) => {
+                    heartbeat_tries += 1;
+                    if heartbeat_tries > 5 {
+                        println!(
+                            "\nERROR Failed to receive heartbeat 5 times, removing device {}\n",
+                            udid
+                        );
+                        tokio::spawn(async move {
+                            remove_from_data(data, udid).await;
+                        });
+                        break;
+                    }
                 }
             }
             if *pls_stop.lock().unwrap() {

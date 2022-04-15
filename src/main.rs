@@ -22,6 +22,7 @@ async fn main() {
     let mut port = 27015;
     let mut host = None;
     let mut plist_storage = None;
+    let mut use_unix = true;
 
     // Loop through args
     let mut i = 0;
@@ -31,13 +32,34 @@ async fn main() {
                 port = std::env::args().nth(i + 1).unwrap().parse::<i32>().unwrap();
                 i += 2;
             }
-            "-h" | "--host" => {
+            "--host" => {
                 host = Some(std::env::args().nth(i + 1).unwrap().to_string());
                 i += 2;
             }
             "--plist-storage" => {
                 plist_storage = Some(std::env::args().nth(i + 1).unwrap());
                 i += 1;
+            }
+            "--disable-unix" => {
+                use_unix = false;
+                i += 1;
+            }
+            "-h" | "--help" => {
+                println!("netmuxd - a network multiplexer");
+                println!("Usage:");
+                println!("  netmuxd [options]");
+                println!("Options:");
+                println!("  -p, --port <port>");
+                println!("  --host <host>");
+                println!("  --plist-storage <path>");
+                println!("  --disable-unix");
+                println!("  -h, --help");
+                std::process::exit(0);
+            }
+            "-about" => {
+                println!("netmuxd - a network multiplexer");
+                println!("Copyright (c) 2020 Jackson Coxson");
+                println!("Licensed under the MIT License");
             }
             _ => {
                 i += 1;
@@ -53,57 +75,62 @@ async fn main() {
     });
 
     if let Some(host) = host {
-        // Create TcpListener
-        let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
-            .await
-            .unwrap();
+        let tcp_data = data.clone();
+        tokio::spawn(async move {
+            let data = tcp_data;
+            // Create TcpListener
+            let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+                .await
+                .unwrap();
 
-        println!("Listening on {}:{}", host, port);
-        println!("WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well");
-        loop {
-            let (mut socket, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(_) => {
-                    continue;
-                }
-            };
-            let cloned_data = data.clone();
-            // Wait for a message from the client
-            let mut buf = [0; 1024];
-            let size = match socket.read(&mut buf).await {
-                Ok(s) => s,
-                Err(_) => {
+            println!("Listening on {}:{}", host, port);
+            println!("WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well");
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        continue;
+                    }
+                };
+                let cloned_data = data.clone();
+                // Wait for a message from the client
+                let mut buf = [0; 1024];
+                let size = match socket.read(&mut buf).await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        break;
+                    }
+                };
+                if size == 0 {
                     break;
                 }
-            };
-            if size == 0 {
-                break;
-            }
-            let buffer = &buf[0..size];
+                let buffer = &buf[0..size];
 
-            let parsed: raw_packet::RawPacket = buffer.into();
+                let parsed: raw_packet::RawPacket = buffer.into();
 
-            if parsed.message == 69 && parsed.tag == 69 {
-                match instruction(parsed, cloned_data.clone()).await {
-                    Ok(to_send) => {
-                        if let Some(to_send) = to_send {
-                            socket.write_all(&to_send).await.unwrap();
+                if parsed.message == 69 && parsed.tag == 69 {
+                    match instruction(parsed, cloned_data.clone()).await {
+                        Ok(to_send) => {
+                            if let Some(to_send) = to_send {
+                                socket.write_all(&to_send).await.unwrap();
+                            }
                         }
+                        Err(_) => {}
                     }
-                    Err(_) => {}
-                }
-            } else {
-                match cope(parsed, cloned_data).await {
-                    Ok(to_send) => {
-                        if let Some(to_send) = to_send {
-                            socket.write_all(&to_send).await.unwrap();
+                } else {
+                    match cope(parsed, cloned_data).await {
+                        Ok(to_send) => {
+                            if let Some(to_send) = to_send {
+                                socket.write_all(&to_send).await.unwrap();
+                            }
                         }
+                        Err(_) => {}
                     }
-                    Err(_) => {}
                 }
             }
-        }
-    } else {
+        });
+    }
+    if use_unix {
         // Delete old Unix socket
         std::fs::remove_file("/var/run/usbmuxd").unwrap_or_default();
         // Create UnixListener
@@ -159,5 +186,7 @@ async fn main() {
                 }
             });
         }
+    } else {
+        loop {}
     }
 }

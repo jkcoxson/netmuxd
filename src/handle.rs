@@ -15,7 +15,6 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
         .get_string_val()?;
     match packet_type.as_str() {
         "ListDevices" => {
-            println!("ListDevices");
             let data = data.lock().await;
             let mut device_list = Plist::new_array();
             for i in &data.devices {
@@ -39,12 +38,10 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
             return Ok(Some(res));
         }
         "Listen" => {
-            println!("Listen");
             // Instruct netmuxd to not drop this connection until it drops from the other side
             return Ok(Some(Vec::new()));
         }
         "ReadPairRecord" => {
-            println!("ReadPairRecord");
             let lock = data.lock().await;
             let pair_file = match lock.get_pairing_record(
                 packet
@@ -66,7 +63,6 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
             return Ok(Some(res));
         }
         "ReadBUID" => {
-            println!("ReadBUID");
             let lock = data.lock().await;
             let buid = lock.get_buid()?;
 

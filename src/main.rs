@@ -148,7 +148,6 @@ async fn main() {
                     continue;
                 }
             };
-            println!("Accepted unix connection");
             let cloned_data = data.clone();
             tokio::spawn(async move {
                 // Wait for a message from the client
@@ -194,9 +193,6 @@ async fn main() {
                         Ok(to_send) => {
                             if let Some(to_send) = to_send {
                                 socket.write_all(&to_send).await.unwrap();
-                                println!("Responed");
-                            } else {
-                                println!("No response");
                             }
                         }
                         Err(_) => {}
@@ -216,15 +212,11 @@ async fn main() {
                                             }
                                         };
                                         if size == 0 {
-                                            println!("Client has dropped");
                                             return;
                                         }
                                     }
                                 }
                                 socket.write_all(&to_send).await.unwrap();
-                                println!("Responed");
-                            } else {
-                                println!("No response");
                             }
                         }
                         Err(_) => {}

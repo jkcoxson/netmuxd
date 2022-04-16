@@ -47,10 +47,6 @@ pub fn heartbeat(
                 Err(_) => {
                     heartbeat_tries += 1;
                     if heartbeat_tries > 5 {
-                        println!(
-                            "Failed to receive heartbeat 5 times, device disconnected. Removing device {}",
-                            udid
-                        );
                         tokio::spawn(async move {
                             remove_from_data(data, udid).await;
                         });

@@ -148,6 +148,7 @@ async fn main() {
                     continue;
                 }
             };
+            println!("Accepted unix connection");
             let cloned_data = data.clone();
             tokio::spawn(async move {
                 // Wait for a message from the client
@@ -159,13 +160,32 @@ async fn main() {
                     }
                 };
                 if size == 0 {
+                    println!("Size was zero");
                     return;
                 }
-                if size < 20 {
-                    // Probably a bad packet
-                    return;
+
+                let buffer = &mut buf[0..size].to_vec();
+                if size == 16 {
+                    println!("Only read the header, pulling more bytes");
+                    // Get the number of bytes to pull
+                    let packet_size = &buffer[0..4];
+                    let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
+                    println!("Packet size: {}", packet_size);
+                    // Pull the rest of the packet
+                    let mut packet = vec![0; packet_size as usize];
+                    let size = match socket.read(&mut packet).await {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return;
+                        }
+                    };
+                    if size == 0 {
+                        println!("Size was zero");
+                        return;
+                    }
+                    // Append the packet to the buffer
+                    buffer.append(&mut packet);
                 }
-                let buffer = &buf[0..size];
 
                 let parsed: raw_packet::RawPacket = buffer.into();
 
@@ -174,6 +194,9 @@ async fn main() {
                         Ok(to_send) => {
                             if let Some(to_send) = to_send {
                                 socket.write_all(&to_send).await.unwrap();
+                                println!("Responed");
+                            } else {
+                                println!("No response");
                             }
                         }
                         Err(_) => {}
@@ -182,7 +205,26 @@ async fn main() {
                     match cope(parsed, cloned_data).await {
                         Ok(to_send) => {
                             if let Some(to_send) = to_send {
+                                if to_send.len() == 0 {
+                                    loop {
+                                        // Wait for a message from the client
+                                        let mut buf = [0; 1024];
+                                        let size = match socket.read(&mut buf).await {
+                                            Ok(s) => s,
+                                            Err(_) => {
+                                                return;
+                                            }
+                                        };
+                                        if size == 0 {
+                                            println!("Client has dropped");
+                                            return;
+                                        }
+                                    }
+                                }
                                 socket.write_all(&to_send).await.unwrap();
+                                println!("Responed");
+                            } else {
+                                println!("No response");
                             }
                         }
                         Err(_) => {}

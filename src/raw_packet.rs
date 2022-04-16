@@ -38,8 +38,8 @@ impl From<RawPacket> for Vec<u8> {
     }
 }
 
-impl From<Vec<u8>> for RawPacket {
-    fn from(packet: Vec<u8>) -> Self {
+impl From<&mut Vec<u8>> for RawPacket {
+    fn from(packet: &mut Vec<u8>) -> Self {
         let packet: &[u8] = &packet;
         packet.into()
     }

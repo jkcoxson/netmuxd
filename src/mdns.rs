@@ -4,6 +4,7 @@ use crate::{
     central_data::{CentralData, Device},
     heartbeat,
 };
+use log::info;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
@@ -15,7 +16,7 @@ const SERVICE_NAME: &'static str = "_apple-mobdev2._tcp.local";
 
 pub async fn discover(data: Arc<Mutex<CentralData>>) {
     println!("Starting mDNS discovery");
-    let stream = mdns::discover::all(SERVICE_NAME, Duration::from_secs(2))
+    let stream = mdns::discover::all(SERVICE_NAME, Duration::from_secs(10))
         .unwrap()
         .listen();
     pin_mut!(stream);
@@ -43,6 +44,7 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
             let mut lock = data.lock().await;
             if let Ok(udid) = lock.get_udid(mac_addr.to_string()) {
                 if lock.devices.contains_key(&udid) {
+                    info!("Device has already been added to muxer, skipping");
                     continue;
                 }
                 println!("Adding device {}", udid);

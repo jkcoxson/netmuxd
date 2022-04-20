@@ -1,5 +1,6 @@
 // jkcoxson
 
+use log::{error, info};
 use rusty_libimobiledevice::{idevice, services::heartbeat::HeartbeatClient};
 use std::{
     net::IpAddr,
@@ -22,7 +23,10 @@ pub fn heartbeat(
         let hb_client = match HeartbeatClient::new(&device, "netmuxd".to_string()) {
             Ok(hb_client) => hb_client,
             Err(e) => {
-                println!("ERROR creating heartbeat client for udid {}: {:?}", udid, e);
+                error!(
+                    "Failed to create heartbeat client for udid {}: {:?}",
+                    udid, e
+                );
                 tokio::spawn(async move {
                     remove_from_data(data, udid).await;
                 });
@@ -47,6 +51,7 @@ pub fn heartbeat(
                 Err(_) => {
                     heartbeat_tries += 1;
                     if heartbeat_tries > 5 {
+                        info!("Heartbeat failed for {}", udid);
                         tokio::spawn(async move {
                             remove_from_data(data, udid).await;
                         });
@@ -67,6 +72,7 @@ pub fn heartbeat(
 }
 
 pub async fn remove_from_data(data: Arc<tokio::sync::Mutex<CentralData>>, udid: String) {
+    info!("Removing device {} from muxer", udid);
     let mut data = data.lock().await;
     data.remove_device(udid);
 }

@@ -2,6 +2,7 @@
 // Handle raw packets
 
 use crate::{central_data::CentralData, heartbeat, raw_packet::RawPacket};
+use log::info;
 use plist_plus::Plist;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -13,6 +14,7 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
         .clone()
         .dict_get_item("MessageType")?
         .get_string_val()?;
+    info!("Got packet type: {:?}", packet_type);
     match packet_type.as_str() {
         "ListDevices" => {
             let data = data.lock().await;

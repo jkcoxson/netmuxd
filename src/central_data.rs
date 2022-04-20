@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf};
 
+use log::{error, info, warn};
 use plist_plus::Plist;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -26,8 +27,10 @@ pub struct Device {
 impl CentralData {
     pub fn new(plist_storage: Option<String>) -> CentralData {
         let plist_storage = if plist_storage.is_some() {
+            info!("Plist storage specified, ensure the environment is aware");
             plist_storage.unwrap()
         } else {
+            info!("Using system default plist storage");
             match std::env::consts::OS {
                 "macos" => "/var/db/lockdown",
                 "linux" => "/var/lib/lockdown",
@@ -52,6 +55,7 @@ impl CentralData {
         connection_type: String,
     ) {
         if self.devices.contains_key(&udid) {
+            warn!("Device has already been added, skipping");
             return;
         }
         let network_address = ip_address.parse().unwrap();
@@ -66,12 +70,15 @@ impl CentralData {
             serial_number: udid.clone(),
             heartbeat_handle: None,
         };
+        info!("Adding device: {:?}", udid);
         self.devices.insert(udid, dev);
     }
     pub fn remove_device(&mut self, udid: String) {
         if !self.devices.contains_key(&udid) {
+            warn!("Device isn't in the muxer, skipping");
             return;
         }
+        info!("Removing device: {:?}", udid);
         if let Some(handle) = &self.devices.get(&udid).unwrap().heartbeat_handle {
             handle.send(()).unwrap();
         }
@@ -80,9 +87,11 @@ impl CentralData {
     pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
         if !path.exists() {
+            warn!("No pairing record found for device: {:?}", udid);
             return Err(());
         }
         // Read the file
+        info!("Reading pairing record for device: {:?}", udid);
         let mut file = std::fs::File::open(path).unwrap();
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).unwrap();
@@ -91,21 +100,26 @@ impl CentralData {
     pub fn get_buid(&self) -> Result<String, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join("SystemConfiguration.plist");
         if !path.exists() {
+            error!("No SystemConfiguration.plist found!");
             return Err(());
         }
         // Read the file to a string
+        info!("Reading SystemConfiguration.plist");
         let mut file = std::fs::File::open(path).unwrap();
         let mut contents = String::new();
         file.read_to_string(&mut contents).unwrap();
 
         // Parse the string into a plist
+        info!("Parsing SystemConfiguration.plist");
         let plist = Plist::from_xml(contents).unwrap();
         let buid = plist.dict_get_item("SystemBUID")?.get_string_val()?;
         Ok(buid)
     }
 
     pub fn get_udid(&mut self, mac: String) -> Result<String, ()> {
+        info!("Getting UDID for MAC: {:?}", mac);
         if let Some(udid) = self.known_mac_addresses.get(&mac) {
+            info!("Found UDID: {:?}", udid);
             return Ok(udid.to_string());
         }
         // Iterate through all files in the plist storage, loading them into memory
@@ -144,6 +158,7 @@ impl CentralData {
             }
         }
         if let Some(udid) = self.known_mac_addresses.get(&mac) {
+            info!("Found UDID: {:?}", udid);
             return Ok(udid.to_string());
         }
         Err(())

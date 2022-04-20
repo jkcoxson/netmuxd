@@ -199,6 +199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "autotools"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8138adefca3e5d2e73bfba83bd6eeaf904b26a7ac1b4a19892cfe16cc7e1701"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.59.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -316,6 +325,15 @@ dependencies = [
  "textwrap",
  "unicode-width",
  "vec_map",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8ad8cef104ac57b68b89df3208164d228503abbdce70f6880ffa3d970e7443a"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -668,7 +686,7 @@ dependencies = [
  "colored",
  "futures-util",
  "mdns",
- "plist_plus 0.1.0",
+ "plist_plus",
  "rusty_libimobiledevice",
  "tokio",
 ]
@@ -759,18 +777,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 name = "plist_plus"
 version = "0.1.0"
 dependencies = [
- "bindgen",
- "cc",
- "libc",
- "rand",
-]
-
-[[package]]
-name = "plist_plus"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68110e1841c6953bed636d8ba264491e798e4bb03d108f5f1c01331fbd72dda"
-dependencies = [
+ "autotools",
  "bindgen",
  "cc",
  "libc",
@@ -916,10 +923,12 @@ checksum = "f2cc38e8fa666e2de3c4aba7edeb5ffc5246c1c2ed0e3d17e560aeeba736b23f"
 name = "rusty_libimobiledevice"
 version = "0.1.2"
 dependencies = [
+ "autotools",
  "bindgen",
  "cc",
+ "cmake",
  "libc",
- "plist_plus 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "plist_plus",
 ]
 
 [[package]]

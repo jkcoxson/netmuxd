@@ -4,4 +4,6 @@
 mod raw_packet;
 
 #[tokio::main]
-async fn main() {}
+async fn main() {
+    // Request a connection
+}

@@ -16,7 +16,7 @@ const SERVICE_NAME: &'static str = "_apple-mobdev2._tcp.local";
 
 pub async fn discover(data: Arc<Mutex<CentralData>>) {
     println!("Starting mDNS discovery");
-    let stream = mdns::discover::all(SERVICE_NAME, Duration::from_secs(10))
+    let stream = mdns::discover::all(SERVICE_NAME, Duration::from_secs(5))
         .unwrap()
         .listen();
     pin_mut!(stream);

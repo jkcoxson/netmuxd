@@ -72,7 +72,7 @@ pub fn heartbeat(
 }
 
 pub async fn remove_from_data(data: Arc<tokio::sync::Mutex<CentralData>>, udid: String) {
-    info!("Removing device {} from muxer", udid);
+    println!("Removing {}", udid);
     let mut data = data.lock().await;
     data.remove_device(udid);
 }

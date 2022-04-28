@@ -45,7 +45,7 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
                 let device = Device {
                     connection_type: "Network".to_string(),
                     device_id: 200,
-                    service_name: SERVICE_NAME.to_string(),
+                    service_name: service_name.to_string(),
                     interface_index: 300,
                     network_address: addr,
                     serial_number: udid.to_string(),

@@ -157,16 +157,18 @@ async fn main() {
 
         println!("Listening on /var/run/usbmuxd");
 
-        loop {
-            let (mut socket, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(_) => {
-                    warn!("Error accepting connection");
-                    continue;
-                }
-            };
-            let cloned_data = data.clone();
-            tokio::spawn(async move {
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        warn!("Error accepting connection");
+                        continue;
+                    }
+                };
+
+                let cloned_data = data.clone();
+
                 // Wait for a message from the client
                 let mut buf = [0; 1024];
                 let size = match socket.read(&mut buf).await {
@@ -239,8 +241,8 @@ async fn main() {
                         Err(_) => {}
                     }
                 }
-            });
-        }
+            }
+        });
     }
     local.await;
 }

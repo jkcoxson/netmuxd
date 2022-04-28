@@ -75,7 +75,9 @@ async fn main() {
     let data = Arc::new(Mutex::new(central_data::CentralData::new(plist_storage)));
     info!("Created new central data");
     let data_clone = data.clone();
-    tokio::spawn(async move {
+
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(async move {
         mdns::discover(data_clone).await;
         error!("mDNS discovery stopped, how the heck did you break this");
     });
@@ -239,7 +241,6 @@ async fn main() {
                 }
             });
         }
-    } else {
-        loop {}
     }
+    local.await;
 }

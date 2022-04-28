@@ -17,7 +17,7 @@ path = "src/passthrough.rs"
 
 [dependencies]
 tokio = { version = "*", features = [ "full" ] }
-mdns = { version = "*", path = "../mdns" }
+zeroconf = { version = "*", path = "../zeroconf-rs/zeroconf" }
 futures-util = { version = "*" }
 colored = { version = "*" }
 rusty_libimobiledevice = { version = "*", path = "../rusty_libimobiledevice", features = [ "static", "vendored" ] }

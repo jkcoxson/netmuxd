@@ -23,7 +23,7 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
         let result = browser.browse_async().await;
 
         if let Ok(service) = result {
-            println!("Service discovered: {:?}", service);
+            info!("Service discovered: {:?}", service);
             let name = service.name();
             if !name.contains("@") {
                 continue;

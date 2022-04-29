@@ -281,4 +281,5 @@ async fn main() {
         });
     }
     local.await;
+    error!("mDNS discovery stopped");
 }

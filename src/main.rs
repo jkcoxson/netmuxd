@@ -97,67 +97,103 @@ async fn main() {
                 let (mut socket, _) = match listener.accept().await {
                     Ok(s) => s,
                     Err(_) => {
+                        warn!("Error accepting connection");
                         continue;
                     }
                 };
-                info!("Accepted connection on TCP socket");
                 let cloned_data = data.clone();
-                // Wait for a message from the client
-                let mut buf = [0; 1024];
-                let size = match socket.read(&mut buf).await {
-                    Ok(s) => s,
-                    Err(_) => {
-                        break;
-                    }
-                };
-                if size == 0 {
-                    info!("TCP size is zero, closing connection");
-                    break;
-                }
-                let buffer = &buf[0..size];
-
-                let parsed: raw_packet::RawPacket = buffer.into();
-
-                if parsed.message == 69 && parsed.tag == 69 {
-                    info!("Received netmuxd instruction");
-                    match instruction(parsed, cloned_data.clone()).await {
-                        Ok(to_send) => {
-                            if let Some(to_send) = to_send {
-                                info!("Sending instruction response");
-                                socket.write_all(&to_send).await.unwrap();
-                            }
+                tokio::spawn(async move {
+                    // Wait for a message from the client
+                    let mut buf = [0; 1024];
+                    let size = match socket.read(&mut buf).await {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return;
                         }
-                        Err(_) => {}
+                    };
+                    if size == 0 {
+                        info!("TCP size is zero, closing connection");
+                        return;
                     }
-                } else {
-                    info!("Coping with an instruction");
-                    match cope(parsed, cloned_data).await {
-                        Ok(to_send) => {
-                            if let Some(to_send) = to_send {
-                                info!("Sending cope response");
-                                socket.write_all(&to_send).await.unwrap();
+
+                    let buffer = &mut buf[0..size].to_vec();
+                    if size == 16 {
+                        info!("Only read the header, pulling more bytes");
+                        // Get the number of bytes to pull
+                        let packet_size = &buffer[0..4];
+                        let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
+                        info!("Packet size: {}", packet_size);
+                        // Pull the rest of the packet
+                        let mut packet = vec![0; packet_size as usize];
+                        let size = match socket.read(&mut packet).await {
+                            Ok(s) => s,
+                            Err(_) => {
+                                return;
                             }
+                        };
+                        if size == 0 {
+                            info!("Size was zero");
+                            return;
                         }
-                        Err(_) => {}
+                        // Append the packet to the buffer
+                        buffer.append(&mut packet);
                     }
-                }
+
+                    let parsed: raw_packet::RawPacket = buffer.into();
+
+                    if parsed.message == 69 && parsed.tag == 69 {
+                        match instruction(parsed, cloned_data.clone()).await {
+                            Ok(to_send) => {
+                                if let Some(to_send) = to_send {
+                                    socket.write_all(&to_send).await.unwrap();
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    } else {
+                        match cope(parsed, cloned_data).await {
+                            Ok(to_send) => {
+                                if let Some(to_send) = to_send {
+                                    if to_send.len() == 0 {
+                                        loop {
+                                            // Wait for a message from the client
+                                            let mut buf = [0; 1024];
+                                            let size = match socket.read(&mut buf).await {
+                                                Ok(s) => s,
+                                                Err(_) => {
+                                                    return;
+                                                }
+                                            };
+                                            if size == 0 {
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    socket.write_all(&to_send).await.unwrap();
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                });
             }
         });
     }
+
     if use_unix {
-        // Delete old Unix socket
-        info!("Deleting old Unix socket");
-        std::fs::remove_file("/var/run/usbmuxd").unwrap_or_default();
-        // Create UnixListener
-        info!("Binding to new Unix socket");
-        let listener = tokio::net::UnixListener::bind("/var/run/usbmuxd").unwrap();
-        // Change the permission of the socket
-        info!("Changing permissions of socket");
-        fs::set_permissions("/var/run/usbmuxd", fs::Permissions::from_mode(0o666)).unwrap();
-
-        println!("Listening on /var/run/usbmuxd");
-
         tokio::spawn(async move {
+            // Delete old Unix socket
+            info!("Deleting old Unix socket");
+            std::fs::remove_file("/var/run/usbmuxd").unwrap_or_default();
+            // Create UnixListener
+            info!("Binding to new Unix socket");
+            let listener = tokio::net::UnixListener::bind("/var/run/usbmuxd").unwrap();
+            // Change the permission of the socket
+            info!("Changing permissions of socket");
+            fs::set_permissions("/var/run/usbmuxd", fs::Permissions::from_mode(0o666)).unwrap();
+
+            println!("Listening on /var/run/usbmuxd");
+
             loop {
                 let (mut socket, _) = match listener.accept().await {
                     Ok(s) => s,
@@ -166,81 +202,81 @@ async fn main() {
                         continue;
                     }
                 };
-
                 let cloned_data = data.clone();
-
-                // Wait for a message from the client
-                let mut buf = [0; 1024];
-                let size = match socket.read(&mut buf).await {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return;
-                    }
-                };
-                if size == 0 {
-                    info!("Unix size is zero, closing connection");
-                    return;
-                }
-
-                let buffer = &mut buf[0..size].to_vec();
-                if size == 16 {
-                    info!("Only read the header, pulling more bytes");
-                    // Get the number of bytes to pull
-                    let packet_size = &buffer[0..4];
-                    let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
-                    info!("Packet size: {}", packet_size);
-                    // Pull the rest of the packet
-                    let mut packet = vec![0; packet_size as usize];
-                    let size = match socket.read(&mut packet).await {
+                tokio::spawn(async move {
+                    // Wait for a message from the client
+                    let mut buf = [0; 1024];
+                    let size = match socket.read(&mut buf).await {
                         Ok(s) => s,
                         Err(_) => {
                             return;
                         }
                     };
                     if size == 0 {
-                        info!("Size was zero");
+                        info!("Unix size is zero, closing connection");
                         return;
                     }
-                    // Append the packet to the buffer
-                    buffer.append(&mut packet);
-                }
 
-                let parsed: raw_packet::RawPacket = buffer.into();
-
-                if parsed.message == 69 && parsed.tag == 69 {
-                    match instruction(parsed, cloned_data.clone()).await {
-                        Ok(to_send) => {
-                            if let Some(to_send) = to_send {
-                                socket.write_all(&to_send).await.unwrap();
+                    let buffer = &mut buf[0..size].to_vec();
+                    if size == 16 {
+                        info!("Only read the header, pulling more bytes");
+                        // Get the number of bytes to pull
+                        let packet_size = &buffer[0..4];
+                        let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
+                        info!("Packet size: {}", packet_size);
+                        // Pull the rest of the packet
+                        let mut packet = vec![0; packet_size as usize];
+                        let size = match socket.read(&mut packet).await {
+                            Ok(s) => s,
+                            Err(_) => {
+                                return;
                             }
+                        };
+                        if size == 0 {
+                            info!("Size was zero");
+                            return;
                         }
-                        Err(_) => {}
+                        // Append the packet to the buffer
+                        buffer.append(&mut packet);
                     }
-                } else {
-                    match cope(parsed, cloned_data).await {
-                        Ok(to_send) => {
-                            if let Some(to_send) = to_send {
-                                if to_send.len() == 0 {
-                                    loop {
-                                        // Wait for a message from the client
-                                        let mut buf = [0; 1024];
-                                        let size = match socket.read(&mut buf).await {
-                                            Ok(s) => s,
-                                            Err(_) => {
+
+                    let parsed: raw_packet::RawPacket = buffer.into();
+
+                    if parsed.message == 69 && parsed.tag == 69 {
+                        match instruction(parsed, cloned_data.clone()).await {
+                            Ok(to_send) => {
+                                if let Some(to_send) = to_send {
+                                    socket.write_all(&to_send).await.unwrap();
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    } else {
+                        match cope(parsed, cloned_data).await {
+                            Ok(to_send) => {
+                                if let Some(to_send) = to_send {
+                                    if to_send.len() == 0 {
+                                        loop {
+                                            // Wait for a message from the client
+                                            let mut buf = [0; 1024];
+                                            let size = match socket.read(&mut buf).await {
+                                                Ok(s) => s,
+                                                Err(_) => {
+                                                    return;
+                                                }
+                                            };
+                                            if size == 0 {
                                                 return;
                                             }
-                                        };
-                                        if size == 0 {
-                                            return;
                                         }
                                     }
+                                    socket.write_all(&to_send).await.unwrap();
                                 }
-                                socket.write_all(&to_send).await.unwrap();
                             }
+                            Err(_) => {}
                         }
-                        Err(_) => {}
                     }
-                }
+                });
             }
         });
     }

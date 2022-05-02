@@ -1,9 +1,8 @@
-FROM ubuntu:focal-20220415 as builder
+FROM ubuntu:bionic-20220427 as builder
 
 WORKDIR /work
 
-RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && apt-get update \
+RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y \
 	    build-essential \
 	    pkg-config \
@@ -21,13 +20,10 @@ RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
         libplist++-dev libtool autoconf automake \
         python3 python3-dev \
         curl usbmuxd \
-        wget lsb-release wget software-properties-common
+        wget lsb-release wget software-properties-common \
+        clang-10
 
 RUN for i in /etc/ssl/certs/*.pem; do HASH=$(openssl x509 -hash -noout -in $i); ln -s $(basename $i) /etc/ssl/certs/$HASH.0 || true; done
-
-RUN wget https://apt.llvm.org/llvm.sh \
-    && chmod +x llvm.sh \
-    && ./llvm.sh 14
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
@@ -36,7 +32,8 @@ RUN git clone https://github.com/jkcoxson/rusty_libimobiledevice.git \
     && git clone https://github.com/libimobiledevice/libimobiledevice-glue.git \
     && git clone https://github.com/zeyugao/zeroconf-rs.git \
     && git clone https://github.com/libimobiledevice/libplist.git \
-    && git clone https://github.com/libimobiledevice/libusbmuxd.git
+    && git clone https://github.com/libimobiledevice/libusbmuxd.git \
+    && git clone https://github.com/jkcoxson/mdns.git
 
 RUN cd libplist \
     && git checkout db93bae96d64140230ad050061632531644c46ad \
@@ -58,23 +55,27 @@ RUN cd libusbmuxd \
 
 RUN cd rusty_libimobiledevice && git checkout f8fd18f39c74d821258192a26b4e0c930fb48c85 && cd .. \
     && cd zeroconf-rs && git checkout 860b030064308d4318e2c6936886674d955c6472 && cd .. \
-    && cd plist_plus && git checkout 7b6825f1ef89e84fd04746efec593159abec9d65 && cd ..
+    && cd plist_plus && git checkout 7b6825f1ef89e84fd04746efec593159abec9d65 && cd .. \
+    && cd mdns && git checkout 961ab21b5e01143dc3a7f0ba5f654285634e5569 && cd ..
 
 RUN . "$HOME/.cargo/env" && cargo install cargo-chef
 RUN mkdir netmuxd
 COPY recipe.json netmuxd
-RUN . "$HOME/.cargo/env" && cd netmuxd && cargo chef cook --release --recipe-path recipe.json
+RUN . "$HOME/.cargo/env" && cd netmuxd && cargo chef cook --release --recipe-path recipe.json --features "zeroconf"
 
 COPY . netmuxd
 
-RUN cd netmuxd \
+RUN mkdir -p /output/ \
+    && cd netmuxd \
     && . "$HOME/.cargo/env" \
-    && cargo build --release
+    && cargo build --release --features "zeroconf" \
+    && cp target/release/netmuxd /output/netmuxd-zeroconf \
+    && cargo build --release \
+    && cp target/release/netmuxd /output/netmuxd-mdns
 
 FROM ubuntu:20.04
-RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && apt-get update \
+RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y \
         libavahi-client-dev
 
-COPY --from=builder /work/netmuxd/target/release/netmuxd /usr/local/bin/netmuxd
+COPY --from=builder /output/ /usr/local/bin/

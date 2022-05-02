@@ -17,10 +17,14 @@ path = "src/passthrough.rs"
 
 [dependencies]
 tokio = { version = "*", features = [ "full" ] }
-zeroconf = { version = "*", path = "../zeroconf-rs/zeroconf" }
+zeroconf = { version = "*", path = "../zeroconf-rs/zeroconf", optional = true }
+mdns = { version = "*", path = "../mdns" }
 futures-util = { version = "*" }
 colored = { version = "*" }
 rusty_libimobiledevice = { version = "*", path = "../rusty_libimobiledevice", features = [ "static", "vendored" ] }
 plist_plus = { version = "*", features = [ "static", "vendored" ], path = "../plist_plus" }
 log = { version = "*" }
 env_logger = { version = "*" }
+
+[features]
+zeroconf = ["dep:zeroconf"]

@@ -17,6 +17,7 @@ path = "src/passthrough.rs"
 
 [dependencies]
 tokio = { version = "*", features = [ "full" ] }
+zeroconf = { version = "*", path = "../zeroconf-rs/zeroconf", optional = true }
 mdns = { version = "*", path = "../mdns" }
 futures-util = { version = "*" }
 colored = { version = "*" }

@@ -94,6 +94,7 @@ pub async fn instruction(
         .get_string_val()?;
     match packet_type.as_str() {
         "AddDevice" => {
+            info!("Adding manual device");
             let connection_type = packet
                 .plist
                 .clone()

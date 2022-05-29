@@ -27,6 +27,7 @@ async fn main() {
     let mut host = None;
     let mut plist_storage = None;
     let mut use_unix = true;
+    let mut use_mdns = true;
 
     // Loop through args
     let mut i = 0;
@@ -46,6 +47,10 @@ async fn main() {
             }
             "--disable-unix" => {
                 use_unix = false;
+                i += 1;
+            }
+            "--disable-mdns" => {
+                use_mdns = false;
                 i += 1;
             }
             "-h" | "--help" => {
@@ -75,12 +80,6 @@ async fn main() {
     let data = Arc::new(Mutex::new(central_data::CentralData::new(plist_storage)));
     info!("Created new central data");
     let data_clone = data.clone();
-
-    let local = tokio::task::LocalSet::new();
-    local.spawn_local(async move {
-        mdns::discover(data_clone).await;
-        error!("mDNS discovery stopped, how the heck did you break this");
-    });
 
     if let Some(host) = host {
         let tcp_data = data.clone();
@@ -241,6 +240,7 @@ async fn main() {
                     }
 
                     let parsed: raw_packet::RawPacket = buffer.into();
+                    info!("Parsed packet: {:?}", parsed);
 
                     if parsed.message == 69 && parsed.tag == 69 {
                         match instruction(parsed, cloned_data.clone()).await {
@@ -280,6 +280,18 @@ async fn main() {
             }
         });
     }
-    local.await;
-    error!("mDNS discovery stopped");
+    if use_mdns {
+        let local = tokio::task::LocalSet::new();
+        local.spawn_local(async move {
+            mdns::discover(data_clone).await;
+            error!("mDNS discovery stopped, how the heck did you break this");
+        });
+        local.await;
+        error!("mDNS discovery stopped");
+    } else {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
+    }
+    
 }

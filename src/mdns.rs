@@ -1,9 +1,6 @@
 // jkcoxson
 
-use crate::{
-    central_data::{CentralData, Device},
-    heartbeat,
-};
+use crate::central_data::CentralData;
 use log::info;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -54,17 +51,14 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
                     continue;
                 }
                 println!("Adding device {}", udid);
-                let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
-                let device = Device {
-                    connection_type: "Network".to_string(),
-                    device_id: 200,
-                    service_name: service_name.to_string(),
-                    interface_index: 300,
-                    network_address: addr,
-                    serial_number: udid.to_string(),
-                    heartbeat_handle: Some(handle),
-                };
-                lock.devices.insert(udid.clone(), device);
+
+                lock.add_device(
+                    udid,
+                    addr,
+                    service_name.clone(),
+                    "Network".to_string(),
+                    data.clone(),
+                )
             }
         }
     }
@@ -107,17 +101,14 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
                     continue;
                 }
                 println!("Adding device {}", udid);
-                let handle = heartbeat::heartbeat(udid.to_string(), addr, data.clone());
-                let device = Device {
-                    connection_type: "Network".to_string(),
-                    device_id: 200,
-                    service_name: service_name.to_string(),
-                    interface_index: 300,
-                    network_address: addr,
-                    serial_number: udid.to_string(),
-                    heartbeat_handle: Some(handle),
-                };
-                lock.devices.insert(udid.clone(), device);
+
+                lock.add_device(
+                    udid,
+                    addr,
+                    service_name.clone(),
+                    "Network".to_string(),
+                    data.clone(),
+                )
             }
         }
     }

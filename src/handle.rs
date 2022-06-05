@@ -46,7 +46,13 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
                 ip_address.clone().parse().unwrap(),
                 data.clone(),
             );
-            central_data.add_device(udid, ip_address, service_name, connection_type);
+            central_data.add_device(
+                udid,
+                ip_address.parse().unwrap(),
+                service_name,
+                connection_type,
+                data.clone(),
+            );
 
             let mut p = Plist::new_dict();
             p.dict_set_item("Result", "OK".into())?;

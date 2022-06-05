@@ -1,10 +1,12 @@
 // jkcoxson
 
-use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf};
+use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc};
 
 use log::{error, info, warn};
 use plist_plus::Plist;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc::UnboundedSender, Mutex};
+
+use crate::heartbeat;
 
 pub struct CentralData {
     pub devices: HashMap<String, Device>,
@@ -21,7 +23,7 @@ pub struct Device {
     pub interface_index: u64,
     pub network_address: IpAddr,
     pub serial_number: String,
-    pub heartbeat_handle: Option<UnboundedSender<()>>,
+    pub heartbeat_handle: UnboundedSender<()>,
 }
 
 impl CentralData {
@@ -50,17 +52,20 @@ impl CentralData {
     pub fn add_device(
         &mut self,
         udid: String,
-        ip_address: String,
+        network_address: IpAddr,
         service_name: String,
         connection_type: String,
+        data: Arc<Mutex<CentralData>>,
     ) {
         if self.devices.contains_key(&udid) {
             warn!("Device has already been added, skipping");
             return;
         }
-        let network_address = ip_address.parse().unwrap();
         self.last_index += 1;
         self.last_interface_index += 1;
+
+        let handle = heartbeat::heartbeat(udid.to_string(), network_address, data);
+
         let dev = Device {
             connection_type,
             device_id: self.last_index,
@@ -68,7 +73,7 @@ impl CentralData {
             interface_index: self.last_interface_index,
             network_address,
             serial_number: udid.clone(),
-            heartbeat_handle: None,
+            heartbeat_handle: handle,
         };
         info!("Adding device: {:?}", udid);
         self.devices.insert(udid, dev);
@@ -79,9 +84,13 @@ impl CentralData {
             return;
         }
         info!("Removing device: {:?}", udid);
-        if let Some(handle) = &self.devices.get(&udid).unwrap().heartbeat_handle {
-            handle.send(()).unwrap();
-        }
+        let _ = &self
+            .devices
+            .get(&udid)
+            .unwrap()
+            .heartbeat_handle
+            .send(())
+            .unwrap();
         self.devices.remove(&udid);
     }
     pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, ()> {
@@ -173,7 +182,7 @@ impl Device {
         interface_index: u64,
         network_address: IpAddr,
         serial_number: String,
-        handle: Option<UnboundedSender<()>>,
+        handle: UnboundedSender<()>,
     ) -> Device {
         Device {
             connection_type,
@@ -184,55 +193,6 @@ impl Device {
             serial_number,
             heartbeat_handle: handle,
         }
-    }
-}
-
-impl TryFrom<Plist> for Device {
-    type Error = ();
-
-    fn try_from(plist: Plist) -> Result<Self, Self::Error> {
-        let connection_type = plist.dict_get_item("ConnectionType")?.get_string_val()?;
-        let device_id = plist.dict_get_item("DeviceID")?.get_uint_val()?;
-        let service_name = plist
-            .dict_get_item("EscapedFullServiceName")?
-            .get_string_val()?;
-        let interface_index = plist.dict_get_item("InterfaceIndex")?.get_uint_val()?;
-
-        // Parse the network address
-        let network_address = plist.dict_get_item("NetworkAddress")?.get_data_val()?;
-        let mut data = vec![];
-        for i in 0..network_address.len() {
-            data.push(network_address[i] as u8);
-        }
-        let network_address;
-        // Determine if the data is IPv4 or IPv6
-        match data[1] {
-            0x02 => {
-                // IPv4
-                let mut ip_addr = [0u8; 4];
-                ip_addr.copy_from_slice(&data[4..8]);
-                network_address = IpAddr::from(ip_addr);
-            }
-            0x1E => {
-                // IPv6
-                let mut ip_addr = [0u8; 16];
-                ip_addr.copy_from_slice(&data[7..23]);
-                network_address = IpAddr::from(ip_addr);
-            }
-            _ => return Err(()),
-        }
-
-        let serial_number = plist.dict_get_item("SerialNumber")?.get_string_val()?;
-
-        Ok(Device {
-            connection_type,
-            device_id,
-            service_name,
-            interface_index,
-            network_address,
-            serial_number,
-            heartbeat_handle: None,
-        })
     }
 }
 

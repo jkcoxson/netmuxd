@@ -1,14 +1,17 @@
 // jkcoxson
 // Handle raw packets
 
-use crate::{central_data::CentralData, heartbeat, raw_packet::RawPacket};
+use crate::{devices::SharedDevices, heartbeat, raw_packet::RawPacket};
 use log::info;
 use plist_plus::Plist;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Handles usbmuxd's requests
-pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Option<Vec<u8>>, ()> {
+pub async fn cope(
+    packet: RawPacket,
+    data: Arc<Mutex<SharedDevices>>,
+) -> Result<Option<Vec<u8>>, ()> {
     let packet_type = packet
         .plist
         .clone()

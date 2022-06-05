@@ -8,12 +8,12 @@ use std::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::central_data::CentralData;
+use crate::devices::SharedDevices;
 
 pub fn heartbeat(
     udid: String,
     ip_addr: IpAddr,
-    data: Arc<tokio::sync::Mutex<CentralData>>,
+    data: Arc<tokio::sync::Mutex<SharedDevices>>,
 ) -> UnboundedSender<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let pls_stop = Arc::new(Mutex::new(false));
@@ -71,7 +71,7 @@ pub fn heartbeat(
     tx
 }
 
-pub async fn remove_from_data(data: Arc<tokio::sync::Mutex<CentralData>>, udid: String) {
+pub async fn remove_from_data(data: Arc<tokio::sync::Mutex<SharedDevices>>, udid: String) {
     println!("Removing {}", udid);
     let mut data = data.lock().await;
     data.remove_device(udid);

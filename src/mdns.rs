@@ -1,6 +1,6 @@
 // jkcoxson
 
-use crate::central_data::CentralData;
+use crate::devices::SharedDevices;
 use log::info;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ const SERVICE_NAME: &'static str = "apple-mobdev2";
 const SERVICE_PROTOCOL: &'static str = "tcp";
 
 #[cfg(feature = "zeroconf")]
-pub async fn discover(data: Arc<Mutex<CentralData>>) {
+pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
     println!("Starting mDNS discovery for {} with zeroconf", service_name);
 
@@ -65,7 +65,7 @@ pub async fn discover(data: Arc<Mutex<CentralData>>) {
 }
 
 #[cfg(not(feature = "zeroconf"))]
-pub async fn discover(data: Arc<Mutex<CentralData>>) {
+pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
     println!("Starting mDNS discovery for {} with mdns", service_name);
 

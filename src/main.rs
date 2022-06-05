@@ -2,7 +2,7 @@
 
 use std::{fs, os::unix::prelude::PermissionsExt, sync::Arc};
 
-use central_data::CentralData;
+use devices::SharedDevices;
 use log::{error, info, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -11,7 +11,7 @@ use tokio::{
 
 use crate::handle::cope;
 
-mod central_data;
+mod devices;
 mod handle;
 mod heartbeat;
 mod mdns;
@@ -78,7 +78,7 @@ async fn main() {
     }
     info!("Collected arguments, proceeding");
 
-    let data = Arc::new(Mutex::new(central_data::CentralData::new(plist_storage)));
+    let data = Arc::new(Mutex::new(devices::SharedDevices::new(plist_storage)));
     info!("Created new central data");
     let data_clone = data.clone();
 
@@ -151,7 +151,7 @@ async fn main() {
 
 async fn handle_stream(
     mut socket: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    data: Arc<Mutex<CentralData>>,
+    data: Arc<Mutex<SharedDevices>>,
 ) {
     tokio::spawn(async move {
         // Wait for a message from the client

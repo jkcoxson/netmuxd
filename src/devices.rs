@@ -8,15 +8,15 @@ use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use crate::heartbeat;
 
-pub struct CentralData {
-    pub devices: HashMap<String, Device>,
+pub struct SharedDevices {
+    pub devices: HashMap<String, MuxerDevice>,
     pub last_index: u64,
     pub last_interface_index: u64,
     plist_storage: String,
     known_mac_addresses: HashMap<String, String>,
 }
 
-pub struct Device {
+pub struct MuxerDevice {
     pub connection_type: String,
     pub device_id: u64,
     pub service_name: String,
@@ -26,8 +26,8 @@ pub struct Device {
     pub heartbeat_handle: UnboundedSender<()>,
 }
 
-impl CentralData {
-    pub fn new(plist_storage: Option<String>) -> CentralData {
+impl SharedDevices {
+    pub fn new(plist_storage: Option<String>) -> Self {
         let plist_storage = if plist_storage.is_some() {
             info!("Plist storage specified, ensure the environment is aware");
             plist_storage.unwrap()
@@ -41,7 +41,7 @@ impl CentralData {
             }
             .to_string()
         };
-        CentralData {
+        Self {
             devices: HashMap::new(),
             last_index: 0,
             last_interface_index: 0,
@@ -55,7 +55,7 @@ impl CentralData {
         network_address: IpAddr,
         service_name: String,
         connection_type: String,
-        data: Arc<Mutex<CentralData>>,
+        data: Arc<Mutex<Self>>,
     ) {
         if self.devices.contains_key(&udid) {
             warn!("Device has already been added, skipping");
@@ -66,7 +66,7 @@ impl CentralData {
 
         let handle = heartbeat::heartbeat(udid.to_string(), network_address, data);
 
-        let dev = Device {
+        let dev = MuxerDevice {
             connection_type,
             device_id: self.last_index,
             service_name,
@@ -174,7 +174,7 @@ impl CentralData {
     }
 }
 
-impl Device {
+impl MuxerDevice {
     pub fn new(
         connection_type: String,
         device_id: u64,
@@ -183,8 +183,8 @@ impl Device {
         network_address: IpAddr,
         serial_number: String,
         handle: UnboundedSender<()>,
-    ) -> Device {
-        Device {
+    ) -> Self {
+        Self {
             connection_type,
             device_id,
             service_name,
@@ -196,10 +196,10 @@ impl Device {
     }
 }
 
-impl TryFrom<&Device> for Plist {
+impl TryFrom<&MuxerDevice> for Plist {
     type Error = ();
 
-    fn try_from(device: &Device) -> Result<Self, Self::Error> {
+    fn try_from(device: &MuxerDevice) -> Result<Self, Self::Error> {
         let mut p = Plist::new_dict();
         p.dict_set_item("ConnectionType", device.connection_type.clone().into())?;
         p.dict_set_item("DeviceID", device.device_id.into())?;

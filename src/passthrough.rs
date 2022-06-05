@@ -62,13 +62,17 @@ async fn main() {
                 let mut tcp_buffer = [0; 16384];
                 let mut unix_buffer = [0; 16384];
 
-                tokio::select!{
+                tokio::select! {
                     size = socket.read(&mut tcp_buffer) => {
                         if size.is_err() {
                             println!("{}", "Error reading from socket".red());
                             break;
                         }
-                        let tcp_buffer = &tcp_buffer[..size.unwrap()];
+                        let size = size.unwrap();
+                        if size == 0 {
+                            continue;
+                        }
+                        let tcp_buffer = &tcp_buffer[..size];
                         println!("{}", String::from_utf8_lossy(tcp_buffer).trim().green());
                         unix_socket.write_all(tcp_buffer).await.unwrap();
                     },
@@ -77,7 +81,11 @@ async fn main() {
                             println!("{}", "Error reading from unix socket".red());
                             break;
                         }
-                        let unix_buffer = &unix_buffer[..size.unwrap()];
+                        let size = size.unwrap();
+                        if size == 0 {
+                            continue;
+                        }
+                        let unix_buffer = &unix_buffer[..size];
                         println!("{}", String::from_utf8_lossy(unix_buffer).trim().blue());
                         socket.write_all(unix_buffer).await.unwrap();
                     }
@@ -120,7 +128,6 @@ async fn main() {
                 //     }
                 // }
             }
-            
         });
     }
 }

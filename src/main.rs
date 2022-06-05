@@ -82,7 +82,7 @@ async fn main() {
     info!("Created new central data");
     let data_clone = data.clone();
 
-    if let Some(host) = host {
+    if let Some(host) = host.clone() {
         let tcp_data = data.clone();
         tokio::spawn(async move {
             let data = tcp_data;

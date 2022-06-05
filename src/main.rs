@@ -2,13 +2,14 @@
 
 use std::{fs, os::unix::prelude::PermissionsExt, sync::Arc};
 
+use central_data::CentralData;
 use log::{error, info, warn};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::Mutex,
 };
 
-use crate::handle::{cope, instruction};
+use crate::handle::cope;
 
 mod central_data;
 mod handle;
@@ -65,7 +66,7 @@ async fn main() {
                 println!("  -h, --help");
                 std::process::exit(0);
             }
-            "-about" => {
+            "--about" => {
                 println!("netmuxd - a network multiplexer");
                 println!("Copyright (c) 2020 Jackson Coxson");
                 println!("Licensed under the MIT License");
@@ -93,88 +94,15 @@ async fn main() {
             println!("Listening on {}:{}", host, port);
             println!("WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well");
             loop {
-                let (mut socket, _) = match listener.accept().await {
+                let (socket, _) = match listener.accept().await {
                     Ok(s) => s,
                     Err(_) => {
                         warn!("Error accepting connection");
                         continue;
                     }
                 };
-                let cloned_data = data.clone();
-                tokio::spawn(async move {
-                    // Wait for a message from the client
-                    let mut buf = [0; 1024];
-                    let size = match socket.read(&mut buf).await {
-                        Ok(s) => s,
-                        Err(_) => {
-                            return;
-                        }
-                    };
-                    if size == 0 {
-                        info!("TCP size is zero, closing connection");
-                        return;
-                    }
 
-                    let buffer = &mut buf[0..size].to_vec();
-                    if size == 16 {
-                        info!("Only read the header, pulling more bytes");
-                        // Get the number of bytes to pull
-                        let packet_size = &buffer[0..4];
-                        let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
-                        info!("Packet size: {}", packet_size);
-                        // Pull the rest of the packet
-                        let mut packet = vec![0; packet_size as usize];
-                        let size = match socket.read(&mut packet).await {
-                            Ok(s) => s,
-                            Err(_) => {
-                                return;
-                            }
-                        };
-                        if size == 0 {
-                            info!("Size was zero");
-                            return;
-                        }
-                        // Append the packet to the buffer
-                        buffer.append(&mut packet);
-                    }
-
-                    let parsed: raw_packet::RawPacket = buffer.into();
-
-                    if parsed.message == 69 && parsed.tag == 69 {
-                        match instruction(parsed, cloned_data.clone()).await {
-                            Ok(to_send) => {
-                                if let Some(to_send) = to_send {
-                                    socket.write_all(&to_send).await.unwrap();
-                                }
-                            }
-                            Err(_) => {}
-                        }
-                    } else {
-                        match cope(parsed, cloned_data).await {
-                            Ok(to_send) => {
-                                if let Some(to_send) = to_send {
-                                    if to_send.len() == 0 {
-                                        loop {
-                                            // Wait for a message from the client
-                                            let mut buf = [0; 1024];
-                                            let size = match socket.read(&mut buf).await {
-                                                Ok(s) => s,
-                                                Err(_) => {
-                                                    return;
-                                                }
-                                            };
-                                            if size == 0 {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    socket.write_all(&to_send).await.unwrap();
-                                }
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                });
+                handle_stream(socket, data.clone()).await;
             }
         });
     }
@@ -201,82 +129,8 @@ async fn main() {
                         continue;
                     }
                 };
-                let cloned_data = data.clone();
-                tokio::spawn(async move {
-                    // Wait for a message from the client
-                    let mut buf = [0; 1024];
-                    let size = match socket.read(&mut buf).await {
-                        Ok(s) => s,
-                        Err(_) => {
-                            return;
-                        }
-                    };
-                    if size == 0 {
-                        info!("Unix size is zero, closing connection");
-                        return;
-                    }
 
-                    let buffer = &mut buf[0..size].to_vec();
-                    if size == 16 {
-                        info!("Only read the header, pulling more bytes");
-                        // Get the number of bytes to pull
-                        let packet_size = &buffer[0..4];
-                        let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
-                        info!("Packet size: {}", packet_size);
-                        // Pull the rest of the packet
-                        let mut packet = vec![0; packet_size as usize];
-                        let size = match socket.read(&mut packet).await {
-                            Ok(s) => s,
-                            Err(_) => {
-                                return;
-                            }
-                        };
-                        if size == 0 {
-                            info!("Size was zero");
-                            return;
-                        }
-                        // Append the packet to the buffer
-                        buffer.append(&mut packet);
-                    }
-
-                    let parsed: raw_packet::RawPacket = buffer.into();
-                    info!("Parsed packet: {:?}", parsed);
-
-                    if parsed.message == 69 && parsed.tag == 69 {
-                        match instruction(parsed, cloned_data.clone()).await {
-                            Ok(to_send) => {
-                                if let Some(to_send) = to_send {
-                                    socket.write_all(&to_send).await.unwrap();
-                                }
-                            }
-                            Err(_) => {}
-                        }
-                    } else {
-                        match cope(parsed, cloned_data).await {
-                            Ok(to_send) => {
-                                if let Some(to_send) = to_send {
-                                    if to_send.len() == 0 {
-                                        loop {
-                                            // Wait for a message from the client
-                                            let mut buf = [0; 1024];
-                                            let size = match socket.read(&mut buf).await {
-                                                Ok(s) => s,
-                                                Err(_) => {
-                                                    return;
-                                                }
-                                            };
-                                            if size == 0 {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    socket.write_all(&to_send).await.unwrap();
-                                }
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                });
+                handle_stream(socket, data.clone()).await;
             }
         });
     }
@@ -293,5 +147,79 @@ async fn main() {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
     }
-    
+}
+
+async fn handle_stream(
+    mut socket: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    data: Arc<Mutex<CentralData>>,
+) {
+    tokio::spawn(async move {
+        // Wait for a message from the client
+        let mut buf = [0; 1024];
+        let size = match socket.read(&mut buf).await {
+            Ok(s) => s,
+            Err(_) => {
+                return;
+            }
+        };
+        if size == 0 {
+            info!("Unix size is zero, closing connection");
+            return;
+        }
+
+        let buffer = &mut buf[0..size].to_vec();
+        if size == 16 {
+            info!("Only read the header, pulling more bytes");
+            // Get the number of bytes to pull
+            let packet_size = &buffer[0..4];
+            let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
+            info!("Packet size: {}", packet_size);
+            // Pull the rest of the packet
+            let mut packet = vec![0; packet_size as usize];
+            let size = match socket.read(&mut packet).await {
+                Ok(s) => s,
+                Err(_) => {
+                    return;
+                }
+            };
+            if size == 0 {
+                info!("Size was zero");
+                return;
+            }
+            // Append the packet to the buffer
+            buffer.append(&mut packet);
+        }
+
+        let parsed: raw_packet::RawPacket = match buffer.try_into() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("Could not parse packet");
+                return;
+            }
+        };
+
+        match cope(parsed, data).await {
+            Ok(to_send) => {
+                if let Some(to_send) = to_send {
+                    if to_send.len() == 0 {
+                        loop {
+                            // Wait for a message from the client
+                            let mut buf = [0; 1024];
+                            let size = match socket.read(&mut buf).await {
+                                Ok(s) => s,
+                                Err(_) => {
+                                    return;
+                                }
+                            };
+                            if size == 0 {
+                                return;
+                            }
+                        }
+                    }
+                    socket.write_all(&to_send).await.unwrap();
+                }
+            }
+            Err(_) => {}
+        }
+    });
 }

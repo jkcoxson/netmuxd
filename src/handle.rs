@@ -16,6 +16,47 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
         .get_string_val()?;
     info!("Got packet type: {:?}", packet_type);
     match packet_type.as_str() {
+        //////////////////////////////
+        // netmuxd specific packets //
+        //////////////////////////////
+        "AddDevice" => {
+            let connection_type = packet
+                .plist
+                .clone()
+                .dict_get_item("ConnectionType")?
+                .get_string_val()?;
+            let service_name = packet
+                .plist
+                .clone()
+                .dict_get_item("ServiceName")?
+                .get_string_val()?;
+            let ip_address = packet
+                .plist
+                .clone()
+                .dict_get_item("IPAddress")?
+                .get_string_val()?;
+            let udid = packet
+                .plist
+                .clone()
+                .dict_get_item("DeviceID")?
+                .get_string_val()?;
+            let mut central_data = data.lock().await;
+            heartbeat::heartbeat(
+                udid.clone(),
+                ip_address.clone().parse().unwrap(),
+                data.clone(),
+            );
+            central_data.add_device(udid, ip_address, service_name, connection_type);
+
+            let mut p = Plist::new_dict();
+            p.dict_set_item("Result", "OK".into())?;
+            let res: Vec<u8> = RawPacket::new(p, 1, 8, packet.tag).into();
+            return Ok(Some(res));
+        }
+
+        //////////////////////////////
+        // usbmuxd protocol packets //
+        //////////////////////////////
         "ListDevices" => {
             let data = data.lock().await;
             let mut device_list = Plist::new_array();
@@ -73,59 +114,6 @@ pub async fn cope(packet: RawPacket, data: Arc<Mutex<CentralData>>) -> Result<Op
 
             let res = RawPacket::new(p, 1, 8, packet.tag);
             let res: Vec<u8> = res.into();
-            return Ok(Some(res));
-        }
-        _ => {
-            println!("Unknown packet type: {}", packet_type);
-        }
-    }
-    Ok(None)
-}
-
-/// Handles netmuxd specific requests
-pub async fn instruction(
-    packet: RawPacket,
-    data: Arc<Mutex<CentralData>>,
-) -> Result<Option<Vec<u8>>, ()> {
-    let packet_type = packet
-        .plist
-        .clone()
-        .dict_get_item("MessageType")?
-        .get_string_val()?;
-    match packet_type.as_str() {
-        "AddDevice" => {
-            info!("Adding manual device");
-            let connection_type = packet
-                .plist
-                .clone()
-                .dict_get_item("ConnectionType")?
-                .get_string_val()?;
-            let service_name = packet
-                .plist
-                .clone()
-                .dict_get_item("ServiceName")?
-                .get_string_val()?;
-            let ip_address = packet
-                .plist
-                .clone()
-                .dict_get_item("IPAddress")?
-                .get_string_val()?;
-            let udid = packet
-                .plist
-                .clone()
-                .dict_get_item("DeviceID")?
-                .get_string_val()?;
-            let mut central_data = data.lock().await;
-            heartbeat::heartbeat(
-                udid.clone(),
-                ip_address.clone().parse().unwrap(),
-                data.clone(),
-            );
-            central_data.add_device(udid, ip_address, service_name, connection_type);
-
-            let mut p = Plist::new_dict();
-            p.dict_set_item("Result", "OK".into())?;
-            let res: Vec<u8> = RawPacket::new(p, 1, 8, packet.tag).into();
             return Ok(Some(res));
         }
         _ => {

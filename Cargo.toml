@@ -27,6 +27,7 @@ plist_plus = { version = "*", features = [ "static", "vendored" ], path = "../pl
 
 log = { version = "*" }
 env_logger = { version = "*" }
+colored = { version = "*" }
 
 rusb = { version = "*" }
 libusb1-sys = { version = "*" }

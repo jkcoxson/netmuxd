@@ -122,7 +122,7 @@ async fn main() {
             println!("Listening on /var/run/usbmuxd");
 
             loop {
-                let (mut socket, _) = match listener.accept().await {
+                let (socket, _) = match listener.accept().await {
                     Ok(s) => s,
                     Err(_) => {
                         warn!("Error accepting connection");

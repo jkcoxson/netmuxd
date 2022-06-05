@@ -102,7 +102,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                 }
                 println!("Adding device {}", udid);
 
-                lock.add_device(
+                lock.add_network_device(
                     udid,
                     addr,
                     service_name.clone(),

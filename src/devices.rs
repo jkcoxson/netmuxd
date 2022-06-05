@@ -17,12 +17,22 @@ pub struct SharedDevices {
 }
 
 pub struct MuxerDevice {
+    // Universal types
     pub connection_type: String,
     pub device_id: u64,
     pub service_name: String,
     pub interface_index: u64,
-    pub network_address: IpAddr,
     pub serial_number: String,
+
+    // Network types
+    pub network_address: Option<IpAddr>,
+
+    // USB types
+    pub connection_speed: Option<u64>,
+    pub location_id: Option<u64>,
+    pub product_id: Option<u64>,
+
+    // Handle
     pub heartbeat_handle: UnboundedSender<()>,
 }
 
@@ -49,7 +59,7 @@ impl SharedDevices {
             known_mac_addresses: HashMap::new(),
         }
     }
-    pub fn add_device(
+    pub fn add_network_device(
         &mut self,
         udid: String,
         network_address: IpAddr,
@@ -71,9 +81,12 @@ impl SharedDevices {
             device_id: self.last_index,
             service_name,
             interface_index: self.last_interface_index,
-            network_address,
+            network_address: Some(network_address),
             serial_number: udid.clone(),
             heartbeat_handle: handle,
+            connection_speed: None,
+            location_id: None,
+            product_id: None,
         };
         info!("Adding device: {:?}", udid);
         self.devices.insert(udid, dev);
@@ -174,28 +187,6 @@ impl SharedDevices {
     }
 }
 
-impl MuxerDevice {
-    pub fn new(
-        connection_type: String,
-        device_id: u64,
-        service_name: String,
-        interface_index: u64,
-        network_address: IpAddr,
-        serial_number: String,
-        handle: UnboundedSender<()>,
-    ) -> Self {
-        Self {
-            connection_type,
-            device_id,
-            service_name,
-            interface_index,
-            network_address,
-            serial_number,
-            heartbeat_handle: handle,
-        }
-    }
-}
-
 impl TryFrom<&MuxerDevice> for Plist {
     type Error = ();
 
@@ -208,7 +199,7 @@ impl TryFrom<&MuxerDevice> for Plist {
 
         // Reassemble the network address back into bytes
         let mut data = [0u8; 152];
-        match device.network_address {
+        match device.network_address.unwrap() {
             IpAddr::V4(ip_addr) => {
                 data[0] = 10;
                 data[1] = 0x02;

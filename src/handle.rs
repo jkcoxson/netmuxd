@@ -49,7 +49,7 @@ pub async fn cope(
                 ip_address.clone().parse().unwrap(),
                 data.clone(),
             );
-            central_data.add_device(
+            central_data.add_network_device(
                 udid,
                 ip_address.parse().unwrap(),
                 service_name,

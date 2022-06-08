@@ -25,19 +25,18 @@ RUN for i in /etc/ssl/certs/*.pem; do HASH=$(openssl x509 -hash -noout -in $i); 
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+
 RUN . "$HOME/.cargo/env" && cargo install cargo-chef
 
 RUN git clone https://github.com/jkcoxson/rusty_libimobiledevice.git \
     && git clone https://github.com/jkcoxson/plist_plus.git \
-    && git clone https://github.com/libimobiledevice/libimobiledevice-glue.git \
     && git clone https://github.com/zeyugao/zeroconf-rs.git \
-    && git clone https://github.com/libimobiledevice/libplist.git \
-    && git clone https://github.com/libimobiledevice/libusbmuxd.git \
     && git clone https://github.com/jkcoxson/mdns.git
 
-RUN cd rusty_libimobiledevice && git checkout eddfea5b3aab76606f84f09de30d5066f72ae9ab && cd .. \
+RUN cd rusty_libimobiledevice && git checkout 67e6c6068fb4da673fc55546c775b113a706b450 && cd .. \
     && cd zeroconf-rs && git checkout 860b030064308d4318e2c6936886674d955c6472 && cd .. \
-    && cd plist_plus && git checkout 7b6825f1ef89e84fd04746efec593159abec9d65 && cd .. \
+    && cd plist_plus && git checkout b59a50e9626dd86d903bbb70f1d6c0de7093991d && cd .. \
     && cd mdns && git checkout 961ab21b5e01143dc3a7f0ba5f654285634e5569 && cd ..
 
 RUN mkdir netmuxd

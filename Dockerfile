@@ -34,7 +34,7 @@ RUN git clone https://github.com/jkcoxson/rusty_libimobiledevice.git \
     && git clone https://github.com/zeyugao/zeroconf-rs.git \
     && git clone https://github.com/jkcoxson/mdns.git
 
-RUN cd rusty_libimobiledevice && git checkout 67e6c6068fb4da673fc55546c775b113a706b450 && cd .. \
+RUN cd rusty_libimobiledevice && git checkout 4d0ab844527e4e585e44532eb93c3200740c56c9 && cd .. \
     && cd zeroconf-rs && git checkout 860b030064308d4318e2c6936886674d955c6472 && cd .. \
     && cd plist_plus && git checkout b59a50e9626dd86d903bbb70f1d6c0de7093991d && cd .. \
     && cd mdns && git checkout 961ab21b5e01143dc3a7f0ba5f654285634e5569 && cd ..

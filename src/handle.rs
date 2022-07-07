@@ -3,7 +3,7 @@
 
 use crate::{devices::SharedDevices, heartbeat, raw_packet::RawPacket};
 use log::info;
-use plist_plus::Plist;
+use plist_plus::{error::PlistError, Plist};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 pub async fn cope(
     packet: RawPacket,
     data: Arc<Mutex<SharedDevices>>,
-) -> Result<Option<Vec<u8>>, ()> {
+) -> Result<Option<Vec<u8>>, PlistError> {
     let packet_type = packet
         .plist
         .clone()

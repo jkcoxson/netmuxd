@@ -3,7 +3,7 @@
 use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc};
 
 use log::{error, info, warn};
-use plist_plus::Plist;
+use plist_plus::{error::PlistError, Plist};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use crate::heartbeat;
@@ -124,11 +124,11 @@ impl SharedDevices {
         file.read_to_end(&mut contents).unwrap();
         Ok(contents)
     }
-    pub fn get_buid(&self) -> Result<String, ()> {
+    pub fn get_buid(&self) -> Result<String, PlistError> {
         let path = PathBuf::from(self.plist_storage.clone()).join("SystemConfiguration.plist");
         if !path.exists() {
             error!("No SystemConfiguration.plist found!");
-            return Err(());
+            return Err(PlistError::Unknown);
         }
         // Read the file to a string
         info!("Reading SystemConfiguration.plist");
@@ -193,7 +193,7 @@ impl SharedDevices {
 }
 
 impl TryFrom<&MuxerDevice> for Plist {
-    type Error = ();
+    type Error = PlistError;
 
     fn try_from(device: &MuxerDevice) -> Result<Self, Self::Error> {
         let mut p = Plist::new_dict();

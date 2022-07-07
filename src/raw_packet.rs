@@ -99,7 +99,13 @@ impl TryFrom<&[u8]> for RawPacket {
         });
 
         let plist = &packet[16..packet_size as usize];
-        let plist = Plist::from_xml(String::from_utf8_lossy(plist).to_string())?;
+        let plist = if let Ok(p) = Plist::from_xml(String::from_utf8_lossy(plist).to_string()) {
+            p
+        } else {
+            warn!("Failed to parse packet plist");
+            return Err(());
+        };
+
         Ok(RawPacket {
             size: packet_size,
             version: packet_version,

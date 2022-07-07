@@ -30,6 +30,7 @@ pub fn start_listener(data: Arc<Mutex<SharedDevices>>) {
 }
 
 struct Handler {
+    #[allow(dead_code)]
     data: Arc<Mutex<SharedDevices>>,
 }
 

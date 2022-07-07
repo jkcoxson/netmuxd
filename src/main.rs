@@ -212,28 +212,23 @@ async fn handle_stream(
             }
         };
 
-        match cope(parsed, data).await {
-            Ok(to_send) => {
-                if let Some(to_send) = to_send {
-                    if to_send.len() == 0 {
-                        loop {
-                            // Wait for a message from the client
-                            let mut buf = [0; 1024];
-                            let size = match socket.read(&mut buf).await {
-                                Ok(s) => s,
-                                Err(_) => {
-                                    return;
-                                }
-                            };
-                            if size == 0 {
-                                return;
-                            }
+        if let Ok(Some(to_send)) = cope(parsed, data).await {
+            if to_send.is_empty() {
+                loop {
+                    // Wait for a message from the client
+                    let mut buf = [0; 1024];
+                    let size = match socket.read(&mut buf).await {
+                        Ok(s) => s,
+                        Err(_) => {
+                            return;
                         }
+                    };
+                    if size == 0 {
+                        return;
                     }
-                    socket.write_all(&to_send).await.unwrap();
                 }
             }
-            Err(_) => {}
+            socket.write_all(&to_send).await.unwrap();
         }
     });
 }

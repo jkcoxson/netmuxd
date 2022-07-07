@@ -42,8 +42,8 @@ impl From<RawPacket> for Vec<u8> {
 impl TryFrom<&mut Vec<u8>> for RawPacket {
     type Error = ();
     fn try_from(packet: &mut Vec<u8>) -> Result<Self, Self::Error> {
-        let packet: &[u8] = &packet;
-        Ok(packet.try_into()?)
+        let packet: &[u8] = packet;
+        packet.try_into()
     }
 }
 
@@ -99,13 +99,13 @@ impl TryFrom<&[u8]> for RawPacket {
         });
 
         let plist = &packet[16..packet_size as usize];
-        let plist = Plist::from_xml(String::from_utf8_lossy(&plist).to_string())?;
+        let plist = Plist::from_xml(String::from_utf8_lossy(plist).to_string())?;
         Ok(RawPacket {
             size: packet_size,
             version: packet_version,
-            message: message,
+            message,
             tag: packet_tag,
-            plist: plist,
+            plist,
         })
     }
 }

@@ -36,9 +36,9 @@ pub struct MuxerDevice {
 
 impl SharedDevices {
     pub fn new(plist_storage: Option<String>) -> Self {
-        let plist_storage = if plist_storage.is_some() {
+        let plist_storage = if let Some(plist_storage) = plist_storage {
             info!("Plist storage specified, ensure the environment is aware");
-            plist_storage.unwrap()
+            plist_storage
         } else {
             info!("Using system default plist storage");
             match std::env::consts::OS {
@@ -90,7 +90,7 @@ impl SharedDevices {
         self.devices.insert(udid, dev);
     }
 
-    pub fn add_usb_device(&mut self, udid: String, data: Arc<Mutex<Self>>) {
+    pub fn _add_usb_device(&mut self, _udid: String, _data: Arc<Mutex<Self>>) {
         // todo
     }
 

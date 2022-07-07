@@ -20,8 +20,8 @@ use {
     zeroconf::{MdnsBrowser, ServiceType},
 };
 
-const SERVICE_NAME: &'static str = "apple-mobdev2";
-const SERVICE_PROTOCOL: &'static str = "tcp";
+const SERVICE_NAME: &str = "apple-mobdev2";
+const SERVICE_PROTOCOL: &str = "tcp";
 
 #[cfg(feature = "zeroconf")]
 pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
@@ -80,12 +80,11 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
         if let Some(mut addr) = addr {
             let mut mac_addr = None;
             for i in response.records() {
-                match i.kind {
-                    RecordKind::A(addr4) => addr = std::net::IpAddr::V4(addr4),
-                    _ => (),
+                if let RecordKind::A(addr4) = i.kind {
+                    addr = std::net::IpAddr::V4(addr4)
                 }
-                if i.name.contains(&service_name) && i.name.contains("@") {
-                    mac_addr = Some(i.name.split("@").collect::<Vec<&str>>()[0]);
+                if i.name.contains(&service_name) && i.name.contains('@') {
+                    mac_addr = Some(i.name.split('@').collect::<Vec<&str>>()[0]);
                 }
             }
 

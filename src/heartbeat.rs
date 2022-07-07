@@ -19,7 +19,7 @@ pub fn heartbeat(
     let pls_stop = Arc::new(Mutex::new(false));
     let pls_stop_clone = pls_stop.clone();
     tokio::task::spawn_blocking(move || {
-        let device = idevice::Device::new(udid.clone(), true, Some(ip_addr), 0).unwrap();
+        let device = idevice::Device::new(udid.clone(), Some(ip_addr), 0);
         let hb_client = match HeartbeatClient::new(&device, "netmuxd".to_string()) {
             Ok(hb_client) => hb_client,
             Err(e) => {

@@ -16,6 +16,7 @@ mod handle;
 mod heartbeat;
 mod mdns;
 mod raw_packet;
+mod usb;
 
 #[tokio::main]
 async fn main() {
@@ -27,8 +28,10 @@ async fn main() {
     let mut port = 27015;
     let mut host = None;
     let mut plist_storage = None;
+
     let mut use_unix = true;
     let mut use_mdns = true;
+    let mut use_usb = true;
 
     // Loop through args
     let mut i = 0;
@@ -52,6 +55,10 @@ async fn main() {
             }
             "--disable-mdns" => {
                 use_mdns = false;
+                i += 1;
+            }
+            "--disable-usb" => {
+                use_usb = false;
                 i += 1;
             }
             "-h" | "--help" => {
@@ -81,6 +88,7 @@ async fn main() {
     let data = Arc::new(Mutex::new(devices::SharedDevices::new(plist_storage)));
     info!("Created new central data");
     let data_clone = data.clone();
+    let usb_data = data.clone();
 
     if let Some(host) = host.clone() {
         let tcp_data = data.clone();
@@ -134,6 +142,11 @@ async fn main() {
             }
         });
     }
+
+    if use_usb {
+        usb::start_listener(usb_data);
+    }
+
     if use_mdns {
         let local = tokio::task::LocalSet::new();
         local.spawn_local(async move {
@@ -142,6 +155,7 @@ async fn main() {
         });
         local.await;
         error!("mDNS discovery stopped");
+        std::process::exit(1);
     } else {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;

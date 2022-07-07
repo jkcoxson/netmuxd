@@ -20,20 +20,18 @@ pub struct MuxerDevice {
     // Universal types
     pub connection_type: String,
     pub device_id: u64,
-    pub service_name: String,
     pub interface_index: u64,
     pub serial_number: String,
 
     // Network types
     pub network_address: Option<IpAddr>,
+    pub heartbeat_handle: Option<UnboundedSender<()>>,
+    pub service_name: Option<String>,
 
     // USB types
     pub connection_speed: Option<u64>,
     pub location_id: Option<u64>,
     pub product_id: Option<u64>,
-
-    // Handle
-    pub heartbeat_handle: UnboundedSender<()>,
 }
 
 impl SharedDevices {
@@ -79,11 +77,11 @@ impl SharedDevices {
         let dev = MuxerDevice {
             connection_type,
             device_id: self.last_index,
-            service_name,
+            service_name: Some(service_name),
             interface_index: self.last_interface_index,
             network_address: Some(network_address),
             serial_number: udid.clone(),
-            heartbeat_handle: handle,
+            heartbeat_handle: Some(handle),
             connection_speed: None,
             location_id: None,
             product_id: None,
@@ -91,6 +89,11 @@ impl SharedDevices {
         info!("Adding device: {:?}", udid);
         self.devices.insert(udid, dev);
     }
+
+    pub fn add_usb_device(&mut self, udid: String, data: Arc<Mutex<Self>>) {
+        // todo
+    }
+
     pub fn remove_device(&mut self, udid: String) {
         if !self.devices.contains_key(&udid) {
             warn!("Device isn't in the muxer, skipping");
@@ -102,6 +105,8 @@ impl SharedDevices {
             .get(&udid)
             .unwrap()
             .heartbeat_handle
+            .as_ref()
+            .unwrap()
             .send(())
             .unwrap();
         self.devices.remove(&udid);
@@ -155,7 +160,7 @@ impl SharedDevices {
                 let plist = match file.read_to_string(&mut contents) {
                     Ok(_) => Plist::from_xml(contents).unwrap(),
                     Err(e) => {
-                        println!("Error reading file: {:?}", e);
+                        warn!("Error reading file: {:?}", e);
                         let mut buf = vec![];
                         file.read_to_end(&mut buf).unwrap();
                         match Plist::from_memory(buf) {
@@ -194,7 +199,10 @@ impl TryFrom<&MuxerDevice> for Plist {
         let mut p = Plist::new_dict();
         p.dict_set_item("ConnectionType", device.connection_type.clone().into())?;
         p.dict_set_item("DeviceID", device.device_id.into())?;
-        p.dict_set_item("EscapedFullServiceName", device.service_name.clone().into())?;
+        p.dict_set_item(
+            "EscapedFullServiceName",
+            device.service_name.clone().unwrap().into(),
+        )?;
         p.dict_set_item("InterfaceIndex", device.interface_index.into())?;
 
         // Reassemble the network address back into bytes

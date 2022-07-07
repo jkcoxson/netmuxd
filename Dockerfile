@@ -29,14 +29,10 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 
 RUN . "$HOME/.cargo/env" && cargo install cargo-chef
 
-RUN git clone https://github.com/jkcoxson/rusty_libimobiledevice.git \
-    && git clone https://github.com/jkcoxson/plist_plus.git \
-    && git clone https://github.com/zeyugao/zeroconf-rs.git \
+RUN git clone https://github.com/zeyugao/zeroconf-rs.git \
     && git clone https://github.com/jkcoxson/mdns.git
 
-RUN cd rusty_libimobiledevice && git checkout 32d8d395beedfecb686f5270f094f0591d798dfc && cd .. \
-    && cd zeroconf-rs && git checkout 860b030064308d4318e2c6936886674d955c6472 && cd .. \
-    && cd plist_plus && git checkout d7891eee219a3c98a0c70f10748f3acd4926c03f && cd .. \
+RUN cd zeroconf-rs && git checkout 860b030064308d4318e2c6936886674d955c6472 && cd .. \
     && cd mdns && git checkout 961ab21b5e01143dc3a7f0ba5f654285634e5569 && cd ..
 
 RUN mkdir netmuxd

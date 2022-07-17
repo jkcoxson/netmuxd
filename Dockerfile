@@ -36,9 +36,11 @@ RUN cd zeroconf-rs && git checkout 860b030064308d4318e2c6936886674d955c6472 && c
     && cd mdns && git checkout 961ab21b5e01143dc3a7f0ba5f654285634e5569 && cd ..
 
 RUN mkdir netmuxd
-COPY recipe.json netmuxd
+COPY Cargo.toml netmuxd
+COPY Cargo.lock netmuxd
 RUN . "$HOME/.cargo/env" \
     && cd netmuxd \
+    && cargo chef prepare --recipe-path recipe.json \
     && cargo chef cook --release --recipe-path recipe.json \
     && cargo chef cook --release --recipe-path recipe.json --features "zeroconf"
 

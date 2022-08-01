@@ -31,7 +31,7 @@ async fn main() {
 
     let mut use_unix = true;
     let mut use_mdns = true;
-    let mut use_usb = true;
+    let mut use_usb = false;
 
     // Loop through args
     let mut i = 0;
@@ -57,8 +57,8 @@ async fn main() {
                 use_mdns = false;
                 i += 1;
             }
-            "--disable-usb" => {
-                use_usb = false;
+            "--enable-usb" => {
+                use_usb = true;
                 i += 1;
             }
             "-h" | "--help" => {
@@ -70,7 +70,10 @@ async fn main() {
                 println!("  --host <host>");
                 println!("  --plist-storage <path>");
                 println!("  --disable-unix");
+                println!("  --enable-mdns");
+                println!("  --enable-usb");
                 println!("  -h, --help");
+                println!("  --about");
                 std::process::exit(0);
             }
             "--about" => {

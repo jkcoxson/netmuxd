@@ -1,6 +1,8 @@
 // jkcoxson
 
-use std::{fs, os::unix::prelude::PermissionsExt, sync::Arc};
+use std::{fs, sync::Arc};
+#[cfg(unix)]
+use std::os::unix::prelude::PermissionsExt;
 
 use devices::SharedDevices;
 use log::{error, info, warn};
@@ -29,6 +31,7 @@ async fn main() {
     let mut host = None;
     let mut plist_storage = None;
 
+    #[cfg(unix)]
     let mut use_unix = true;
     let mut use_mdns = true;
     let mut use_usb = false;
@@ -49,6 +52,7 @@ async fn main() {
                 plist_storage = Some(std::env::args().nth(i + 1).unwrap());
                 i += 1;
             }
+            #[cfg(unix)]
             "--disable-unix" => {
                 use_unix = false;
                 i += 1;
@@ -118,6 +122,7 @@ async fn main() {
         });
     }
 
+    #[cfg(unix)]
     if use_unix {
         tokio::spawn(async move {
             // Delete old Unix socket

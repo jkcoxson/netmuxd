@@ -14,6 +14,7 @@ pub struct SharedDevices {
     pub last_interface_index: u64,
     plist_storage: String,
     known_mac_addresses: HashMap<String, String>,
+    paired_udids: Vec<String>,
 }
 
 pub struct MuxerDevice {
@@ -55,6 +56,7 @@ impl SharedDevices {
             last_interface_index: 0,
             plist_storage,
             known_mac_addresses: HashMap::new(),
+            paired_udids: Vec::new(),
         }
     }
     pub fn add_network_device(
@@ -90,8 +92,25 @@ impl SharedDevices {
         self.devices.insert(udid, dev);
     }
 
-    pub fn _add_usb_device(&mut self, _udid: String, _data: Arc<Mutex<Self>>) {
-        // todo
+    pub fn add_usb_device(&mut self, udid: String, _data: Arc<Mutex<Self>>) {
+        self.last_index += 1;
+        self.last_interface_index += 1;
+
+        let dev = MuxerDevice {
+            connection_type: "USB".to_string(),
+            device_id: self.last_index,
+            service_name: None,
+            interface_index: self.last_interface_index,
+            network_address: None,
+            serial_number: udid,
+            heartbeat_handle: None,
+            connection_speed: None,
+            location_id: None,
+            product_id: None,
+        };
+
+        info!("Adding device: {:?}", dev.serial_number);
+        self.devices.insert(dev.serial_number.clone(), dev);
     }
 
     pub fn remove_device(&mut self, udid: String) {
@@ -143,12 +162,7 @@ impl SharedDevices {
         Ok(buid)
     }
 
-    pub fn get_udid(&mut self, mac: String) -> Result<String, ()> {
-        info!("Getting UDID for MAC: {:?}", mac);
-        if let Some(udid) = self.known_mac_addresses.get(&mac) {
-            info!("Found UDID: {:?}", udid);
-            return Ok(udid.to_string());
-        }
+    pub fn update_cache(&mut self) {
         // Iterate through all files in the plist storage, loading them into memory
         let path = PathBuf::from(self.plist_storage.clone());
         for entry in std::fs::read_dir(path).expect("Plist storage is unreadable!!") {
@@ -171,7 +185,14 @@ impl SharedDevices {
                         }
                     }
                 };
-                let mac_addr = match plist.dict_get_item("WiFiMACAddress") {
+                let mac_addr = match plist.clone().dict_get_item("WiFiMACAddress") {
+                    Ok(item) => match item.get_string_val() {
+                        Ok(val) => val,
+                        Err(_) => continue,
+                    },
+                    Err(_) => continue,
+                };
+                let udid = match plist.clone().dict_get_item("UDID") {
                     Ok(item) => match item.get_string_val() {
                         Ok(val) => val,
                         Err(_) => continue,
@@ -182,13 +203,35 @@ impl SharedDevices {
                     mac_addr,
                     path.file_stem().unwrap().to_string_lossy().to_string(),
                 );
+                if self.paired_udids.contains(&udid) {
+                    continue;
+                }
+                self.paired_udids.push(udid);
             }
         }
+    }
+
+    pub fn get_udid_from_mac(&mut self, mac: String) -> Result<String, ()> {
+        info!("Getting UDID for MAC: {:?}", mac);
+        if let Some(udid) = self.known_mac_addresses.get(&mac) {
+            info!("Found UDID: {:?}", udid);
+            return Ok(udid.to_string());
+        }
+        self.update_cache();
+
         if let Some(udid) = self.known_mac_addresses.get(&mac) {
             info!("Found UDID: {:?}", udid);
             return Ok(udid.to_string());
         }
         Err(())
+    }
+
+    pub fn check_udid(&mut self, udid: String) -> bool {
+        if self.paired_udids.contains(&udid) {
+            return true;
+        }
+        self.update_cache();
+        self.paired_udids.contains(&udid)
     }
 }
 
@@ -199,51 +242,55 @@ impl TryFrom<&MuxerDevice> for Plist {
         let mut p = Plist::new_dict();
         p.dict_set_item("ConnectionType", device.connection_type.clone().into())?;
         p.dict_set_item("DeviceID", device.device_id.into())?;
-        p.dict_set_item(
-            "EscapedFullServiceName",
-            device.service_name.clone().unwrap().into(),
-        )?;
+        if device.connection_type == "Network" {
+            p.dict_set_item(
+                "EscapedFullServiceName",
+                device.service_name.clone().unwrap().into(),
+            )?;
+        }
         p.dict_set_item("InterfaceIndex", device.interface_index.into())?;
 
         // Reassemble the network address back into bytes
-        let mut data = [0u8; 152];
-        match device.network_address.unwrap() {
-            IpAddr::V4(ip_addr) => {
-                data[0] = 10;
-                data[1] = 0x02;
-                data[2] = 0x00;
-                data[3] = 0x00;
-                let mut i = 4;
-                for byte in ip_addr.octets() {
-                    data[i] = byte;
-                    i += 1;
+        if device.connection_type == "Network" {
+            let mut data = [0u8; 152];
+            match device.network_address.unwrap() {
+                IpAddr::V4(ip_addr) => {
+                    data[0] = 10;
+                    data[1] = 0x02;
+                    data[2] = 0x00;
+                    data[3] = 0x00;
+                    let mut i = 4;
+                    for byte in ip_addr.octets() {
+                        data[i] = byte;
+                        i += 1;
+                    }
+                }
+                IpAddr::V6(ip_addr) => {
+                    data[0] = 28;
+                    data[1] = 0x1E;
+                    data[2] = 0x00;
+                    data[3] = 0x00;
+                    data[4] = 0x00;
+                    data[5] = 0x00;
+                    data[6] = 0x00;
+                    let mut i = 16;
+                    for byte in ip_addr.octets() {
+                        data[i] = byte;
+                        i += 1;
+                    }
                 }
             }
-            IpAddr::V6(ip_addr) => {
-                data[0] = 28;
-                data[1] = 0x1E;
-                data[2] = 0x00;
-                data[3] = 0x00;
-                data[4] = 0x00;
-                data[5] = 0x00;
-                data[6] = 0x00;
-                let mut i = 16;
-                for byte in ip_addr.octets() {
-                    data[i] = byte;
-                    i += 1;
+            // Start from the back and fill with zeros
+            let mut i = data.len() - 2;
+            while i > 0 {
+                if data[i] != 0 {
+                    break;
                 }
+                data[i] = 0;
+                i -= 1;
             }
+            p.dict_set_item("NetworkAddress", Plist::new_data(&data))?;
         }
-        // Start from the back and fill with zeros
-        let mut i = data.len() - 2;
-        while i > 0 {
-            if data[i] != 0 {
-                break;
-            }
-            data[i] = 0;
-            i -= 1;
-        }
-        p.dict_set_item("NetworkAddress", Plist::new_data(&data))?;
 
         p.dict_set_item("SerialNumber", device.serial_number.clone().into())?;
         Ok(p)

@@ -1,6 +1,6 @@
 // jkcoxson
 
-use log::error;
+use log::{error, warn};
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -43,18 +43,42 @@ impl<T: UsbContext> rusb::Hotplug<T> for Handler {
 
             // Get the device's serial number
             let langs = handle
-                .read_languages(std::time::Duration::from_secs(1))
+                .read_languages(std::time::Duration::from_secs(3))
                 .unwrap();
             let serial_number = handle
                 .read_serial_number_string(langs[0], &desc, std::time::Duration::from_secs(1))
                 .unwrap();
+
+            let serial_number = match serial_number.len() {
+                0x28 => {
+                    let mut s = serial_number[..8].to_string();
+                    s.push('-');
+                    s.push_str(&serial_number[8..]);
+                    s
+                }
+                _ => {
+                    warn!("Serial number is unexpected length: {}", serial_number);
+                    return;
+                }
+            };
+
             println!("Serial number: {}", serial_number);
+            let serial_number = serial_number.trim().to_string();
+            let serial_number = serial_number.replace('\0', "");
 
             // Determine if the device is paired
-
-            // If the device is paired, get information about the device and add it to the list of devices
-
-            // If not paired, try to pair the device
+            let data = self.data.clone();
+            tokio::spawn(async move {
+                let cloned_data = data.clone();
+                let mut d = cloned_data.lock().await;
+                if d.check_udid(serial_number.clone()) {
+                    println!("Device is paired!");
+                    d.add_usb_device(serial_number, data);
+                } else {
+                    todo!()
+                    // Try and pair the device
+                }
+            });
         }
     }
 

@@ -36,7 +36,7 @@ pub fn heartbeat(
 
         let mut heartbeat_tries = 0;
         loop {
-            match hb_client.receive(15000) {
+            match hb_client.receive(10000) {
                 Ok(plist) => match hb_client.send(plist) {
                     Ok(_) => {
                         heartbeat_tries = 0;
@@ -48,10 +48,10 @@ pub fn heartbeat(
                         return;
                     }
                 },
-                Err(_) => {
+                Err(e) => {
                     heartbeat_tries += 1;
                     if heartbeat_tries > 5 {
-                        info!("Heartbeat failed for {}", udid);
+                        info!("Heartbeat failed for {}: {:?}", udid, e);
                         tokio::spawn(async move {
                             remove_from_data(data, udid).await;
                         });

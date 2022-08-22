@@ -151,7 +151,7 @@ impl SharedDevices {
         }
         // Iterate through all files in the plist storage, loading them into memory
         let path = PathBuf::from(self.plist_storage.clone());
-        for entry in std::fs::read_dir(path).unwrap() {
+        for entry in std::fs::read_dir(path).expect("Plist storage is unreadable!!") {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.is_file() {

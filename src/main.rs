@@ -1,8 +1,8 @@
 // jkcoxson
 
-use std::{fs, sync::Arc};
+use std::sync::Arc;
 #[cfg(unix)]
-use std::os::unix::prelude::PermissionsExt;
+use std::{fs, os::unix::prelude::PermissionsExt};
 
 use devices::SharedDevices;
 use log::{error, info, warn};
@@ -28,11 +28,15 @@ async fn main() {
     info!("Logger initialized");
 
     let mut port = 27015;
+    #[cfg(unix)]
     let mut host = None;
+    #[cfg(windows)]
+    let mut host = Some("localhost".to_string());
     let mut plist_storage = None;
 
     #[cfg(unix)]
     let mut use_unix = true;
+
     let mut use_mdns = true;
     let mut use_usb = false;
 
@@ -73,11 +77,13 @@ async fn main() {
                 println!("  -p, --port <port>");
                 println!("  --host <host>");
                 println!("  --plist-storage <path>");
+                #[cfg(unix)]
                 println!("  --disable-unix");
                 println!("  --enable-mdns");
-                println!("  --enable-usb");
+                println!("  --enable-usb  (unusable for now)");
                 println!("  -h, --help");
                 println!("  --about");
+                println!("\n\nSet RUST_LOG to info, debug, warn, error, or trace to see more logs. Default is error.");
                 std::process::exit(0);
             }
             "--about" => {
@@ -107,6 +113,7 @@ async fn main() {
                 .unwrap();
 
             println!("Listening on {}:{}", host, port);
+            #[cfg(unix)]
             println!("WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well");
             loop {
                 let (socket, _) = match listener.accept().await {

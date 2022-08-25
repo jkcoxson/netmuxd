@@ -1,6 +1,6 @@
 // jkcoxson
 
-use log::{error, warn};
+use log::{error, info, warn};
 use rusb::UsbContext;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -38,7 +38,7 @@ impl<T: UsbContext> rusb::Hotplug<T> for Handler {
     fn device_arrived(&mut self, device: rusb::Device<T>) {
         let desc = device.device_descriptor().unwrap();
         if desc.vendor_id() == APPLE_VENDOR_ID {
-            println!("iDevice plugged in!");
+            info!("iDevice plugged in!");
             let handle = device.open().unwrap();
 
             // Get the device's serial number
@@ -62,7 +62,6 @@ impl<T: UsbContext> rusb::Hotplug<T> for Handler {
                 }
             };
 
-            println!("Serial number: {}", serial_number);
             let serial_number = serial_number.trim().to_string();
             let serial_number = serial_number.replace('\0', "");
 
@@ -72,7 +71,6 @@ impl<T: UsbContext> rusb::Hotplug<T> for Handler {
                 let cloned_data = data.clone();
                 let mut d = cloned_data.lock().await;
                 if d.check_udid(serial_number.clone()) {
-                    println!("Device is paired!");
                     d.add_usb_device(serial_number, data);
                 } else {
                     todo!()

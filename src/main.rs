@@ -384,7 +384,9 @@ async fn handle_stream(
                     }
                 }
                 Directions::Connect => todo!(),
-                Directions::Listen => todo!(),
+                Directions::Listen => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
             }
         }
     });

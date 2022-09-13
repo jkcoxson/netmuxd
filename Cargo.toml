@@ -29,5 +29,8 @@ log = { version = "*" }
 env_logger = { version = "*" }
 colored = { version = "*" }
 
-rusb = { version = "*" }
-libusb1-sys = { version = "*" }
+rusb = { version = "*", optional = true }
+libusb1-sys = { version = "*", optional = true }
+
+[features]
+usb = [ "libusb1-sys", "rusb" ]

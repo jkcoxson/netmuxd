@@ -92,6 +92,7 @@ impl SharedDevices {
         self.devices.insert(udid, dev);
     }
 
+    #[cfg(feature = "usb")]
     pub fn add_usb_device(&mut self, udid: String, _data: Arc<Mutex<Self>>) {
         self.last_index += 1;
         self.last_interface_index += 1;
@@ -226,6 +227,7 @@ impl SharedDevices {
         Err(())
     }
 
+    #[cfg(feature = "usb")]
     pub fn check_udid(&mut self, udid: String) -> bool {
         if self.paired_udids.contains(&udid) {
             return true;

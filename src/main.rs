@@ -17,6 +17,7 @@ mod devices;
 mod heartbeat;
 mod mdns;
 mod raw_packet;
+#[cfg(feature = "usb")]
 mod usb;
 
 #[tokio::main]
@@ -37,6 +38,7 @@ async fn main() {
     let mut use_unix = true;
 
     let mut use_mdns = true;
+    #[cfg(feature = "usb")]
     let mut use_usb = false;
 
     // Loop through args
@@ -64,6 +66,7 @@ async fn main() {
                 use_mdns = false;
                 i += 1;
             }
+            #[cfg(feature = "usb")]
             "--enable-usb" => {
                 use_usb = true;
                 i += 1;
@@ -79,6 +82,7 @@ async fn main() {
                 #[cfg(unix)]
                 println!("  --disable-unix");
                 println!("  --enable-mdns");
+                #[cfg(feature = "usb")]
                 println!("  --enable-usb  (unusable for now)");
                 println!("  -h, --help");
                 println!("  --about");
@@ -100,6 +104,7 @@ async fn main() {
     let data = Arc::new(Mutex::new(devices::SharedDevices::new(plist_storage)));
     info!("Created new central data");
     let data_clone = data.clone();
+    #[cfg(feature = "usb")]
     let usb_data = data.clone();
 
     if let Some(host) = host.clone() {
@@ -157,6 +162,7 @@ async fn main() {
         });
     }
 
+    #[cfg(feature = "usb")]
     if use_usb {
         usb::start_listener(usb_data);
     }

@@ -16,21 +16,21 @@ name = "passthrough"
 path = "src/passthrough.rs"
 
 [dependencies]
-tokio = { version = "*", features = [ "full" ] }
-futures-util = { version = "*" }
+tokio = { version = "1.17.0", features = [ "full" ] }
+futures-util = { version = "0.3.21" }
 
-zeroconf = { version = "*", path = "../zeroconf-rs/zeroconf", optional = true }
-mdns = { version = "*", path = "../mdns" }
+zeroconf = { version = "0.10.5", path = "../zeroconf-rs/zeroconf", optional = true }
+mdns = { version = "3.0.0", path = "../mdns" }
 
-rusty_libimobiledevice = { version = "*", features = [ "static", "vendored" ] }
-plist_plus = { version = "*", features = [ "static", "vendored" ] }
+rusty_libimobiledevice = { version = "0.1.2", features = [ "static", "vendored" ] }
+plist_plus = { version = "0.2.0", features = [ "static", "vendored" ] }
 
-log = { version = "*" }
-env_logger = { version = "*" }
-colored = { version = "*" }
+log = { version = "0.4.16" }
+env_logger = { version = "0.7.1" }
+colored = { version = "2.0.0" }
 
-rusb = { version = "*", optional = true }
-libusb1-sys = { version = "*", optional = true }
+rusb = { version = "0.9.1", optional = true }
+libusb1-sys = { version = "0.6.2", optional = true }
 
 [features]
 usb = [ "libusb1-sys", "rusb" ]

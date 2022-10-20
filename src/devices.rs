@@ -176,12 +176,14 @@ impl SharedDevices {
 
     pub fn update_cache(&mut self) {
         // Iterate through all files in the plist storage, loading them into memory
+        trace!("Updating plist cache");
         let path = PathBuf::from(self.plist_storage.clone());
         for entry in std::fs::read_dir(path).expect("Plist storage is unreadable!!") {
             let entry = entry.unwrap();
             let path = entry.path();
+            trace!("Attempting to read {:?}", path);
             if path.is_file() {
-                let mut file = std::fs::File::open(path.clone()).unwrap();
+                let mut file = std::fs::File::open(&path).unwrap();
                 let mut contents = String::new();
                 let plist = match file.read_to_string(&mut contents) {
                     Ok(_) => Plist::from_xml(contents).unwrap(),
@@ -192,6 +194,7 @@ impl SharedDevices {
                         match Plist::from_memory(buf) {
                             Ok(plist) => plist,
                             Err(_) => {
+                                trace!("Could not read plist to memory");
                                 continue;
                             }
                         }
@@ -200,24 +203,38 @@ impl SharedDevices {
                 let mac_addr = match plist.clone().dict_get_item("WiFiMACAddress") {
                     Ok(item) => match item.get_string_val() {
                         Ok(val) => val,
-                        Err(_) => continue,
+                        Err(_) => {
+                            warn!("Could not get string value of WiFiMACAddress");
+                            continue;
+                        }
                     },
-                    Err(_) => continue,
+                    Err(_) => {
+                        warn!("Plist did not contain WiFiMACAddress");
+                        continue;
+                    }
                 };
                 let udid = match plist.clone().dict_get_item("UDID") {
                     Ok(item) => match item.get_string_val() {
                         Ok(val) => val,
-                        Err(_) => continue,
+                        Err(_) => {
+                            warn!("Could not get string value of UDID");
+                            continue;
+                        }
                     },
-                    Err(_) => continue,
+                    Err(_) => {
+                        warn!("Plist did not contain UDID");
+                        continue;
+                    }
                 };
                 self.known_mac_addresses.insert(
                     mac_addr,
                     path.file_stem().unwrap().to_string_lossy().to_string(),
                 );
                 if self.paired_udids.contains(&udid) {
+                    trace!("Cache already contained this UDID");
                     continue;
                 }
+                trace!("Adding {} to plist cache", udid);
                 self.paired_udids.push(udid);
             }
         }
@@ -228,6 +245,8 @@ impl SharedDevices {
         if let Some(udid) = self.known_mac_addresses.get(&mac) {
             info!("Found UDID: {:?}", udid);
             return Ok(udid.to_string());
+        } else {
+            trace!("No UDID found for {:?} in cache, re-caching...", mac);
         }
         self.update_cache();
 
@@ -235,6 +254,7 @@ impl SharedDevices {
             info!("Found UDID: {:?}", udid);
             return Ok(udid.to_string());
         }
+        trace!("No UDID found after a re-cache");
         Err(())
     }
 

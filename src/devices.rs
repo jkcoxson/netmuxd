@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc};
 
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use plist_plus::{error::PlistError, Plist};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
@@ -50,6 +50,17 @@ impl SharedDevices {
             }
             .to_string()
         };
+
+        // Make sure the directory exists
+        if std::fs::read_dir(&plist_storage).is_err() {
+            // Create the directory
+            std::fs::create_dir(&plist_storage).expect("Unable to create plist storage folder");
+            info!("Created plist storage!");
+            error!("You are missing a system configuration file. Run usbmuxd to create one.")
+        } else {
+            trace!("Plist storage exists");
+        }
+
         Self {
             devices: HashMap::new(),
             last_index: 0,
@@ -68,7 +79,7 @@ impl SharedDevices {
         data: Arc<Mutex<Self>>,
     ) {
         if self.devices.contains_key(&udid) {
-            warn!("Device has already been added, skipping");
+            trace!("Device has already been added, skipping");
             return;
         }
         self.last_index += 1;

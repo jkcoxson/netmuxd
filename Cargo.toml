@@ -23,7 +23,7 @@ zeroconf = { version = "0.10.5", path = "../zeroconf-rs/zeroconf", optional = tr
 mdns = { version = "3.0.0", path = "../mdns" }
 
 rusty_libimobiledevice = { version = "0.1.2", features = [ "static", "vendored" ] }
-plist_plus = { version = "0.2.1", features = [ "static", "vendored" ], path = "../plist_plus" }
+plist_plus = { version = "0.2.1", features = [ "static", "vendored" ] }
 
 log = { version = "0.4.16" }
 env_logger = { version = "0.7.1" }

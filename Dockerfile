@@ -42,14 +42,14 @@ RUN . "$HOME/.cargo/env" \
     && cd netmuxd \
     && cargo chef prepare --recipe-path recipe.json \
     && cargo chef cook --release --recipe-path recipe.json \
-    && cargo chef cook --release --recipe-path recipe.json --features "zeroconf"
+    && cargo chef cook --release --recipe-path recipe.json --features "zeroconf" --bin netmuxd
 
 COPY . netmuxd
 
 RUN mkdir -p /output/ \
     && cd netmuxd \
     && . "$HOME/.cargo/env" \
-    && cargo build --release --features "zeroconf" \
+    && cargo build --release --features "zeroconf" --bin netmuxd \
     && cp target/release/netmuxd /output/netmuxd-zeroconf \
     && cargo build --release \
     && cp target/release/netmuxd /output/netmuxd-mdns

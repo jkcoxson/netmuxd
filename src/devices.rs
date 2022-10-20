@@ -215,17 +215,36 @@ impl SharedDevices {
                 };
                 let udid = match plist.clone().dict_get_item("UDID") {
                     Ok(item) => match item.get_string_val() {
-                        Ok(val) => val,
+                        Ok(val) => Some(val),
                         Err(_) => {
                             warn!("Could not get string value of UDID");
-                            continue;
+                            None
                         }
                     },
                     Err(_) => {
                         warn!("Plist did not contain UDID");
-                        continue;
+                        None
                     }
                 };
+
+                let udid = if let Some(udid) = udid {
+                    udid
+                } else {
+                    // Use the file name as the UDID
+                    // This won't be reached because the SystemConfiguration doesn't have a WiFiMACAddress
+                    // This is just used as a last resort, but might not be correct so we'll pass a warning
+                    warn!("Using the file name as the UDID");
+                    match path.file_name() {
+                        Some(f) => {
+                            f.to_str().unwrap().split('.').collect::<Vec<&str>>()[0].to_string()
+                        }
+                        None => {
+                            trace!("File had no name");
+                            continue;
+                        }
+                    }
+                };
+
                 self.known_mac_addresses.insert(
                     mac_addr,
                     path.file_stem().unwrap().to_string_lossy().to_string(),

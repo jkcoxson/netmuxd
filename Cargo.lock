@@ -872,7 +872,7 @@ dependencies = [
  "libusb1-sys",
  "log",
  "mdns",
- "plist_plus",
+ "plist_plus 0.2.1",
  "rusb",
  "rusty_libimobiledevice",
  "tokio",
@@ -1022,6 +1022,18 @@ name = "plist_plus"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b16146633cd60a7685c71bfa6282921d84895d4e13a73fbe8d2ec2f394898f5c"
+dependencies = [
+ "autotools",
+ "bindgen 0.59.2",
+ "cc",
+ "libc",
+ "log",
+ "rand",
+]
+
+[[package]]
+name = "plist_plus"
+version = "0.2.1"
 dependencies = [
  "autotools",
  "bindgen 0.59.2",
@@ -1190,7 +1202,7 @@ dependencies = [
  "libc",
  "log",
  "openssl",
- "plist_plus",
+ "plist_plus 0.2.0",
 ]
 
 [[package]]

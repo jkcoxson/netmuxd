@@ -42,7 +42,7 @@ RUN . "$HOME/.cargo/env" \
     && cd netmuxd \
     && cargo chef prepare --recipe-path recipe.json \
     && cargo chef cook --release --recipe-path recipe.json \
-    && cargo chef cook --release --recipe-path recipe.json --features "zeroconf" --bin netmuxd
+    && cargo chef cook --release --recipe-path recipe.json --features "zeroconf"
 
 COPY . netmuxd
 

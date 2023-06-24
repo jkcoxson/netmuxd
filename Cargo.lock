@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "netmuxd"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "colored",
  "env_logger 0.7.1",

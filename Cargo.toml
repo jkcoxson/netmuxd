@@ -19,8 +19,8 @@ path = "src/passthrough.rs"
 tokio = { version = "1.17.0", features = [ "full" ] }
 futures-util = { version = "0.3.21" }
 
-zeroconf = { version = "0.10.5", path = "../zeroconf-rs/zeroconf", optional = true }
-mdns = { version = "3.0.0", path = "../mdns" }
+zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
+mdns = "3.0.0"
 
 rusty_libimobiledevice = { version = "0.1.2", features = [ "static", "vendored" ] }
 plist_plus = { version = "0.2.1", features = [ "static", "vendored" ] }

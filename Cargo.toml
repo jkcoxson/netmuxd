@@ -19,11 +19,11 @@ path = "src/passthrough.rs"
 tokio = { version = "1.17.0", features = [ "full" ] }
 futures-util = { version = "0.3.21" }
 
-zeroconf = { version = "0.10.5", path = "../zeroconf-rs/zeroconf", optional = true }
-mdns = { version = "3.0.0", path = "../mdns" }
+zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
+mdns = "3.0.0"
 
-rusty_libimobiledevice = { version = "0.1.2", features = [ "static", "vendored" ] }
-plist_plus = { version = "0.2.1", features = [ "static", "vendored" ] }
+rusty_libimobiledevice = "0.1.2"
+plist_plus = "0.2.1"
 
 log = { version = "0.4.16" }
 env_logger = { version = "0.7.1" }
@@ -33,4 +33,7 @@ rusb = { version = "0.9.1", optional = true }
 libusb1-sys = { version = "0.6.2", optional = true }
 
 [features]
+default = [ "static", "vendored" ]
+static = [ "rusty_libimobiledevice/static", "plist_plus/static" ]
 usb = [ "libusb1-sys", "rusb" ]
+vendored = [ "rusty_libimobiledevice/vendored", "plist_plus/vendored" ]

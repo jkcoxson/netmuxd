@@ -8,10 +8,6 @@ edition = "2021"
 default-run = "netmuxd"
 
 [[bin]]
-name = "test"
-path = "src/test.rs"
-
-[[bin]]
 name = "passthrough"
 path = "src/passthrough.rs"
 

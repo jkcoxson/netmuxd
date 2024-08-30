@@ -1021,9 +1021,9 @@ checksum = "1df8c4ec4b0627e53bdf214615ad287367e482558cf84b109250b37464dc03ae"
 
 [[package]]
 name = "plist_plus"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77922d69ed3b061d5f19d30ebec3edea8b61eb6eac89dcf5c63a8a883f7ba21a"
+checksum = "d874936ea4972b4081deb70ba7662ee1df43a083e9e8ec83f1a735f3ed274eb6"
 dependencies = [
  "autotools",
  "bindgen 0.59.2",
@@ -1181,9 +1181,9 @@ checksum = "97477e48b4cf8603ad5f7aaf897467cf42ab4218a38ef76fb14c2d6773a6d6a8"
 
 [[package]]
 name = "rusty_libimobiledevice"
-version = "0.1.6"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "495a1f925dbecb282f9636a709b423e67d91848c24034428b22b0944b405123c"
+checksum = "f68967450da26e6c6106bdfe03996cd98e2d132a022f88b524ff4d33b7dd9c82"
 dependencies = [
  "autotools",
  "bindgen 0.59.2",

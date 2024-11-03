@@ -27,3 +27,9 @@ The best way to set this up for that use case is as follows:
 5. Start a new screen for AltServer like ``screen -S altserver``
 6. Set the environment variable like ``export USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015``
 7. Run AltServer ``./AltServer-x86_64``
+
+## License
+
+Due to the licensing of libimobiledevice (which this program depends on),
+this code is licensed under the LGPL 2.1 license. You may use netmuxd's
+code how you will, but binaries must be distributed under and with that license.

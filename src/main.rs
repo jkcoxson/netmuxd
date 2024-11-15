@@ -81,7 +81,7 @@ async fn main() {
                 println!("  --plist-storage <path>");
                 #[cfg(unix)]
                 println!("  --disable-unix");
-                println!("  --enable-mdns");
+                println!("  --disable-mdns");
                 #[cfg(feature = "usb")]
                 println!("  --enable-usb  (unusable for now)");
                 println!("  -h, --help");

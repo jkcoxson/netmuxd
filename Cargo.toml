@@ -15,7 +15,7 @@ path = "src/passthrough.rs"
 tokio = { version = "1.17.0", features = ["full"] }
 futures-util = { version = "0.3.21" }
 
-zeroconf = { version = "0.14.2", optional = true }
+zeroconf = { version = "0.15", optional = true }
 
 rusty_libimobiledevice = "0.1.8"
 plist_plus = "0.2.3"

@@ -1065,9 +1065,9 @@ checksum = "c811ca4a8c853ef420abd8592ba53ddbbac90410fab6903b3e79972a631f7680"
 
 [[package]]
 name = "zeroconf"
-version = "0.14.2"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f36443a3c74563c6320d1c0d77b48d3ea79ee3d622b88619233fc93e00a3976c"
+checksum = "1cb02959b84222ea15aae34b32d981a5c37dcf423d096e788ab39b851dc4b288"
 dependencies = [
  "avahi-sys",
  "bonjour-sys",

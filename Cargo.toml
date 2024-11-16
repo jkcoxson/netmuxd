@@ -16,6 +16,7 @@ tokio = { version = "1.17.0", features = ["full"] }
 futures-util = { version = "0.3.21" }
 
 zeroconf = { version = "0.14.2", optional = true }
+mdns = { version = "3.0.0", optional = true}
 
 rusty_libimobiledevice = "0.1.8"
 plist_plus = "0.2.3"
@@ -28,5 +29,7 @@ rusb = { version = "0.9.3", optional = true }
 libusb1-sys = { version = "0.6.5", optional = true }
 
 [features]
-usb = [ "libusb1-sys", "rusb" ]
-default = ["libusb1-sys", "zeroconf" ]
+default = ["static", "vendored", "zeroconf"]
+static = ["rusty_libimobiledevice/static", "plist_plus/static"]
+usb = ["libusb1-sys", "rusb"]
+vendored = ["rusty_libimobiledevice/vendored", "plist_plus/vendored"]

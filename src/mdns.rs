@@ -4,7 +4,7 @@ use crate::devices::SharedDevices;
 use log::info;
 use std::net::IpAddr;
 use std::any::Any;
-use std::sync::{Arc, Mutex as StdMut};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
@@ -31,12 +31,12 @@ pub struct Context {
 }
 
 #[cfg(feature = "zeroconf")]
-fn on_service_discovered(result: zeroconf::Result<ServiceDiscovery>, _context: Option<Arc<dyn Any>>,) {
+fn on_service_discovered(result: zeroconf::Result<ServiceDiscovery>, context: Option<Arc<dyn Any>>,) {
         if let Ok(service) = result {
             info!("Service discovered: {:?}", service);
-            let mut context = _context.as_ref().unwrap().downcast_ref::<Arc<StdMut<Context>>>().unwrap().lock().unwrap();
-            context.name = String::from(service.name());
-            context.address = String::from(service.address());
+            let mut context_locked = context.as_ref().unwrap().downcast_ref::<Arc<std::sync::Mutex<Context>>>().unwrap().lock().unwrap();
+            context_locked.name = String::from(service.name());
+            context_locked.address = String::from(service.address());
         }
 }
 
@@ -48,13 +48,13 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
     let mut browser = MdnsBrowser::new(ServiceType::new(SERVICE_NAME, SERVICE_PROTOCOL).unwrap());
 
     browser.set_service_discovered_callback(Box::new(on_service_discovered));
-    browser.set_context(Box::new(Arc::new(StdMut::new(Context { name : String::from(""), address : String::from("")}))));
+    browser.set_context(Box::new(Arc::new(std::sync::Mutex::new(Context { name : String::from(""), address : String::from("")}))));
 
     let event_loop = browser.browse_services().unwrap();
     loop {
        event_loop.poll(Duration::from_secs(0)).unwrap();
 
-       let context = browser.context().unwrap().downcast_ref::<Arc<StdMut<Context>>>().unwrap().lock().unwrap();
+       let context = browser.context().unwrap().downcast_ref::<Arc<std::sync::Mutex<Context>>>().unwrap().lock().unwrap();
        let name = context.name.clone();
        let address = context.address.clone();
        info!("Name = {} ; Address = {}", name ,address); 

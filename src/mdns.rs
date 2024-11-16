@@ -48,7 +48,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
     let mut browser = MdnsBrowser::new(ServiceType::new(SERVICE_NAME, SERVICE_PROTOCOL).unwrap());
 
     browser.set_service_discovered_callback(Box::new(on_service_discovered));
-    browser.set_context(Box::new(Arc::new(std::sync::Mutex::new(Context { name : String::from(""), address : String::from("")}))));
+    browser.set_context(Box::new(Arc::new(std::sync::Mutex::new(Context { name : String::new(), address : String::new()}))));
 
     let event_loop = browser.browse_services().unwrap();
     loop {

@@ -150,6 +150,7 @@ impl SharedDevices {
     }
     pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, ()> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
+        info!("Attempting to read pairing file: {path:?}");
         if !path.exists() {
             warn!("No pairing record found for device: {:?}", udid);
             return Err(());

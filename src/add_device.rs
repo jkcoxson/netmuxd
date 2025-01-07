@@ -2,7 +2,7 @@
 // Stand-alone binary to add devices to netmuxd
 
 use plist_plus::Plist;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{Read, Write};
 
 mod raw_packet;
 
@@ -11,11 +11,6 @@ const SERVICE_PROTOCOL: &str = "tcp";
 
 trait ReadWrite: Read + Write + std::fmt::Debug {}
 impl<T: Read + Write + std::fmt::Debug> ReadWrite for T {}
-
-pub struct LockdowndClient {
-    socket: Option<Box<dyn ReadWrite>>,
-    label: String,
-}
 
 fn main() {
     // Read the command line arguments

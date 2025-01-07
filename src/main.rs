@@ -286,11 +286,6 @@ async fn handle_stream(
                                 .get_string_val()
                                 .unwrap();
                             let mut central_data = data.lock().await;
-                            heartbeat::heartbeat(
-                                udid.clone(),
-                                ip_address.clone().parse().unwrap(),
-                                data.clone(),
-                            );
                             central_data.add_network_device(
                                 udid,
                                 ip_address.parse().unwrap(),

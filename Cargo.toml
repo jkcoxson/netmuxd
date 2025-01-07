@@ -24,6 +24,7 @@ plist_plus = "0.2.3"
 log = { version = "0.4.16" }
 env_logger = { version = "0.7.1" }
 colored = { version = "2.0.0" }
+uuid = { version = "1.11", features = ["v4"] }
 
 rusb = { version = "0.9.1", optional = true }
 libusb1-sys = { version = "0.6.2", optional = true }

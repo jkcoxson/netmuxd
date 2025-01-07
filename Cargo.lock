@@ -1182,9 +1182,9 @@ checksum = "97477e48b4cf8603ad5f7aaf897467cf42ab4218a38ef76fb14c2d6773a6d6a8"
 
 [[package]]
 name = "rusty_libimobiledevice"
-version = "0.1.8"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f68967450da26e6c6106bdfe03996cd98e2d132a022f88b524ff4d33b7dd9c82"
+checksum = "ccc0d0151020754e88701695d91d6e106fa02102be2507ccf2db6303ec6019b8"
 dependencies = [
  "autotools",
  "bindgen 0.59.2",

@@ -328,8 +328,8 @@ impl TryFrom<&MuxerDevice> for Plist {
             let mut data = [0u8; 152];
             match device.network_address.unwrap() {
                 IpAddr::V4(ip_addr) => {
-                    data[0] = 10;
-                    data[1] = 0x02;
+                    data[0] = 0x02;
+                    data[1] = 0x00;
                     data[2] = 0x00;
                     data[3] = 0x00;
                     let mut i = 4;
@@ -339,14 +339,15 @@ impl TryFrom<&MuxerDevice> for Plist {
                     }
                 }
                 IpAddr::V6(ip_addr) => {
-                    data[0] = 28;
-                    data[1] = 0x1E;
+                    data[0] = 0x1E;
+                    data[1] = 0x00;
                     data[2] = 0x00;
                     data[3] = 0x00;
                     data[4] = 0x00;
                     data[5] = 0x00;
                     data[6] = 0x00;
-                    let mut i = 16;
+                    data[7] = 0x00;
+                    let mut i = 8;
                     for byte in ip_addr.octets() {
                         data[i] = byte;
                         i += 1;

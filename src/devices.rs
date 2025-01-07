@@ -109,6 +109,10 @@ impl SharedDevices {
         self.devices.insert(udid, dev);
     }
 
+    pub fn get_device_by_id(&self, id: u64) -> Option<&MuxerDevice> {
+        self.devices.values().find(|x| x.device_id == id)
+    }
+
     #[cfg(feature = "usb")]
     pub fn add_usb_device(&mut self, udid: String, _data: Arc<Mutex<Self>>) {
         self.last_index += 1;

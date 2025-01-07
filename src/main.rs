@@ -6,7 +6,7 @@ use std::{fs, os::unix::prelude::PermissionsExt};
 
 use crate::raw_packet::RawPacket;
 use devices::SharedDevices;
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use plist_plus::Plist;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -199,14 +199,16 @@ async fn handle_stream(
         loop {
             // Wait for a message from the client
             let mut buf = [0; 1024];
+            trace!("Waiting for data from client...");
             let size = match socket.read(&mut buf).await {
                 Ok(s) => s,
                 Err(_) => {
                     return;
                 }
             };
+            trace!("Recv'd {size} bytes");
             if size == 0 {
-                info!("Unix size is zero, closing connection");
+                info!("Received size is zero, closing connection");
                 return;
             }
 
@@ -251,6 +253,8 @@ async fn handle_stream(
                         .unwrap()
                         .get_string_val()
                         .unwrap();
+
+                    trace!("usbmuxd client sent {packet_type}");
 
                     match packet_type.as_str() {
                         //////////////////////////////

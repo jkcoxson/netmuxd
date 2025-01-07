@@ -20,6 +20,7 @@ pub fn heartbeat(
     let pls_stop_clone = pls_stop.clone();
     tokio::task::spawn_blocking(move || {
         let device = idevice::Device::new(udid.clone(), Some(ip_addr), 0);
+        log::debug!("Created device struct {udid}");
         let hb_client = match HeartbeatClient::new(&device, "netmuxd".to_string()) {
             Ok(hb_client) => hb_client,
             Err(e) => {
@@ -33,15 +34,18 @@ pub fn heartbeat(
                 return;
             }
         };
+        log::debug!("Created device heartbeat client for {udid}");
 
         let mut heartbeat_tries = 0;
         loop {
             match hb_client.receive(10000) {
                 Ok(plist) => match hb_client.send(plist) {
                     Ok(_) => {
+                        log::debug!("Heartbeat recv {udid}");
                         heartbeat_tries = 0;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        info!("Heartbeat send failed for {}: {:?}", udid, e);
                         tokio::spawn(async move {
                             remove_from_data(data, udid).await;
                         });
@@ -51,7 +55,7 @@ pub fn heartbeat(
                 Err(e) => {
                     heartbeat_tries += 1;
                     if heartbeat_tries > 5 {
-                        info!("Heartbeat failed for {}: {:?}", udid, e);
+                        info!("Heartbeat recv failed for {}: {:?}", udid, e);
                         tokio::spawn(async move {
                             remove_from_data(data, udid).await;
                         });

@@ -222,14 +222,18 @@ impl SharedDevices {
                         }
                     }
                 };
-                let mac_addr = match plist.clone().dict_get_item("WiFiMACAddress") {
-                    Ok(item) => match item.get_string_val() {
-                        Ok(val) => val,
-                        Err(_) => {
-                            warn!("Could not get string value of WiFiMACAddress");
-                            continue;
+                let wifi_plist = plist.clone();
+                let mac_addr = match wifi_plist.dict_get_item("WiFiMACAddress") {
+                    Ok(item) => {
+                        log::debug!("WiFi plist item: {:?}", item.get_string_val());
+                        match item.get_string_val() {
+                            Ok(val) => val,
+                            Err(e) => {
+                                warn!("Could not get string value of WiFiMACAddress: {e:?}");
+                                continue;
+                            }
                         }
-                    },
+                    }
                     Err(_) => {
                         warn!("Plist did not contain WiFiMACAddress");
                         continue;

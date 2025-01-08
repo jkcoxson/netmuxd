@@ -308,6 +308,19 @@ async fn handle_stream(
                             // No more further communication for this packet
                             return;
                         }
+                        "RemoveDevice" => {
+                            let udid = parsed
+                                .plist
+                                .clone()
+                                .dict_get_item("DeviceID")
+                                .unwrap()
+                                .get_string_val()
+                                .unwrap();
+
+                            let central_data = data.lock().await;
+                            central_data.remove_device(udid);
+                            return;
+                        }
                         //////////////////////////////
                         // usbmuxd protocol packets //
                         //////////////////////////////

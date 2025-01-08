@@ -19,6 +19,7 @@ pub struct SharedDevices {
     pub last_index: u64,
     pub last_interface_index: u64,
     plist_storage: String,
+    use_heartbeat: bool,
     known_mac_addresses: HashMap<String, String>,
     paired_udids: Vec<String>,
 }
@@ -42,7 +43,7 @@ pub struct MuxerDevice {
 }
 
 impl SharedDevices {
-    pub fn new(plist_storage: Option<String>) -> Self {
+    pub fn new(plist_storage: Option<String>, use_heartbeat: bool) -> Self {
         let plist_storage = if let Some(plist_storage) = plist_storage {
             info!("Plist storage specified, ensure the environment is aware");
             plist_storage
@@ -71,6 +72,7 @@ impl SharedDevices {
             last_index: 0,
             last_interface_index: 0,
             plist_storage,
+            use_heartbeat,
             known_mac_addresses: HashMap::new(),
             paired_udids: Vec::new(),
         }
@@ -90,7 +92,15 @@ impl SharedDevices {
         self.last_index += 1;
         self.last_interface_index += 1;
 
-        let handle = heartbeat::heartbeat(udid.to_string(), network_address, data);
+        let handle = if self.use_heartbeat {
+            Some(heartbeat::heartbeat(
+                udid.to_string(),
+                network_address,
+                data,
+            ))
+        } else {
+            None
+        };
 
         let dev = MuxerDevice {
             connection_type,
@@ -99,7 +109,7 @@ impl SharedDevices {
             interface_index: self.last_interface_index,
             network_address: Some(network_address),
             serial_number: udid.clone(),
-            heartbeat_handle: Some(handle),
+            heartbeat_handle: handle,
             connection_speed: None,
             location_id: None,
             product_id: None,

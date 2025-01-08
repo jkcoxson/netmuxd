@@ -33,6 +33,7 @@ async fn main() {
     #[cfg(windows)]
     let mut host = Some("localhost".to_string());
     let mut plist_storage = None;
+    let mut use_heartbeat = true;
 
     #[cfg(unix)]
     let mut use_unix = true;
@@ -71,6 +72,10 @@ async fn main() {
                 use_usb = true;
                 i += 1;
             }
+            "--disable-heartbeat" => {
+                use_heartbeat = false;
+                i += 1;
+            }
             "-h" | "--help" => {
                 println!("netmuxd - a network multiplexer");
                 println!("Usage:");
@@ -79,6 +84,7 @@ async fn main() {
                 println!("  -p, --port <port>");
                 println!("  --host <host>");
                 println!("  --plist-storage <path>");
+                println!("  --disable-heartbeat");
                 #[cfg(unix)]
                 println!("  --disable-unix");
                 println!("  --disable-mdns");
@@ -101,7 +107,10 @@ async fn main() {
     }
     info!("Collected arguments, proceeding");
 
-    let data = Arc::new(Mutex::new(devices::SharedDevices::new(plist_storage)));
+    let data = Arc::new(Mutex::new(devices::SharedDevices::new(
+        plist_storage,
+        use_heartbeat,
+    )));
     info!("Created new central data");
     let data_clone = data.clone();
     #[cfg(feature = "usb")]
@@ -317,7 +326,7 @@ async fn handle_stream(
                                 .get_string_val()
                                 .unwrap();
 
-                            let central_data = data.lock().await;
+                            let mut central_data = data.lock().await;
                             central_data.remove_device(udid);
                             return;
                         }

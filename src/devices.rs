@@ -62,7 +62,6 @@ impl SharedDevices {
             // Create the directory
             std::fs::create_dir(&plist_storage).expect("Unable to create plist storage folder");
             info!("Created plist storage!");
-            error!("You are missing a system configuration file. Run usbmuxd to create one.")
         } else {
             trace!("Plist storage exists");
         }

@@ -301,7 +301,9 @@ async fn handle_stream(
                             let mut p = Plist::new_dict();
                             p.dict_set_item("Result", "OK".into()).unwrap();
                             let res: Vec<u8> = RawPacket::new(p, 1, 8, parsed.tag).into();
-                            socket.write_all(&res).await.unwrap();
+                            if let Err(e) = socket.write_all(&res).await {
+                                warn!("Failed to send back success message: {e:?}");
+                            }
 
                             // No more further communication for this packet
                             return;

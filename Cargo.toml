@@ -10,6 +10,7 @@ default-run = "netmuxd"
 [[bin]]
 name = "passthrough"
 path = "src/passthrough.rs"
+
 [[bin]]
 name = "add_device"
 path = "src/add_device.rs"
@@ -21,8 +22,8 @@ futures-util = { version = "0.3.21" }
 zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
 mdns = "3.0.0"
 
-rusty_libimobiledevice = "0.2.3"
-plist_plus = "0.2"
+idevice = "0.1.3"
+plist = "1.7"
 
 log = { version = "0.4.16" }
 env_logger = { version = "0.11" }
@@ -33,7 +34,4 @@ rusb = { version = "0.9.1", optional = true }
 libusb1-sys = { version = "0.7", optional = true }
 
 [features]
-default = ["static", "vendored"]
-static = ["rusty_libimobiledevice/static", "plist_plus/static"]
 usb = ["libusb1-sys", "rusb"]
-vendored = ["rusty_libimobiledevice/vendored", "plist_plus/vendored"]

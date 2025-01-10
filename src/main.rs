@@ -7,7 +7,6 @@ use std::{fs, os::unix::prelude::PermissionsExt};
 use crate::raw_packet::RawPacket;
 use devices::SharedDevices;
 use log::{error, info, trace, warn};
-use plist_plus::Plist;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::Mutex,
@@ -255,13 +254,13 @@ async fn handle_stream(
             match current_directions {
                 Directions::None => {
                     // Handle the packet
-                    let packet_type = parsed
-                        .plist
-                        .clone()
-                        .dict_get_item("MessageType")
-                        .unwrap()
-                        .get_string_val()
-                        .unwrap();
+                    let packet_type = match parsed.plist.get("MessageType") {
+                        Some(plist::Value::String(p)) => p,
+                        _ => {
+                            warn!("Packet didn't contain MessageType");
+                            return;
+                        }
+                    };
 
                     trace!("usbmuxd client sent {packet_type}");
 
@@ -270,45 +269,51 @@ async fn handle_stream(
                         // netmuxd specific packets //
                         //////////////////////////////
                         "AddDevice" => {
-                            let connection_type = parsed
-                                .plist
-                                .clone()
-                                .dict_get_item("ConnectionType")
-                                .unwrap()
-                                .get_string_val()
-                                .unwrap();
-                            let service_name = parsed
-                                .plist
-                                .clone()
-                                .dict_get_item("ServiceName")
-                                .unwrap()
-                                .get_string_val()
-                                .unwrap();
-                            let ip_address = parsed
-                                .plist
-                                .clone()
-                                .dict_get_item("IPAddress")
-                                .unwrap()
-                                .get_string_val()
-                                .unwrap();
-                            let udid = parsed
-                                .plist
-                                .clone()
-                                .dict_get_item("DeviceID")
-                                .unwrap()
-                                .get_string_val()
-                                .unwrap();
-                            let mut central_data = data.lock().await;
-                            central_data.add_network_device(
-                                udid,
-                                ip_address.parse().unwrap(),
-                                service_name,
-                                connection_type,
-                                data.clone(),
-                            );
+                            let connection_type = match parsed.plist.get("ConnectionType") {
+                                Some(plist::Value::String(c)) => c,
+                                _ => {
+                                    warn!("Packet didn't contain ConnectionType");
+                                    return;
+                                }
+                            };
+                            let service_name = match parsed.plist.get("ServiceName") {
+                                Some(plist::Value::String(s)) => s,
+                                _ => {
+                                    warn!("Packet didn't contain ServiceName");
+                                    return;
+                                }
+                            };
 
-                            let mut p = Plist::new_dict();
-                            p.dict_set_item("Result", "OK".into()).unwrap();
+                            let ip_address = match parsed.plist.get("IPAddress") {
+                                Some(plist::Value::String(ip)) => ip,
+                                _ => {
+                                    warn!("Packet didn't contain IPAddress");
+                                    return;
+                                }
+                            };
+
+                            let udid = match parsed.plist.get("DeviceID") {
+                                Some(plist::Value::String(u)) => u,
+                                _ => {
+                                    warn!("Packet didn't contain DeviceID");
+                                    return;
+                                }
+                            };
+
+                            let mut central_data = data.lock().await;
+                            if let Err(e) = central_data.add_network_device(
+                                udid.to_owned(),
+                                ip_address.parse().unwrap(),
+                                service_name.to_owned(),
+                                connection_type.to_owned(),
+                                data.clone(),
+                            ) {
+                                error!("Failed to add requested device to muxer: {e:?}");
+                                return;
+                            }
+
+                            let mut p = plist::Dictionary::new();
+                            p.insert("Result".into(), "OK".into());
                             let res: Vec<u8> = RawPacket::new(p, 1, 8, parsed.tag).into();
                             if let Err(e) = socket.write_all(&res).await {
                                 warn!("Failed to send back success message: {e:?}");
@@ -318,13 +323,13 @@ async fn handle_stream(
                             return;
                         }
                         "RemoveDevice" => {
-                            let udid = parsed
-                                .plist
-                                .clone()
-                                .dict_get_item("DeviceID")
-                                .unwrap()
-                                .get_string_val()
-                                .unwrap();
+                            let udid = match parsed.plist.get("DeviceID") {
+                                Some(plist::Value::String(u)) => u,
+                                _ => {
+                                    warn!("Packet didn't contain DeviceID");
+                                    return;
+                                }
+                            };
 
                             let mut central_data = data.lock().await;
                             central_data.remove_device(udid);
@@ -335,23 +340,20 @@ async fn handle_stream(
                         //////////////////////////////
                         "ListDevices" => {
                             let data = data.lock().await;
-                            let mut device_list = Plist::new_array();
+                            let mut device_list = Vec::new();
                             for i in &data.devices {
-                                let mut to_push = Plist::new_dict();
-                                to_push
-                                    .dict_set_item("DeviceID", Plist::new_uint(i.1.device_id))
-                                    .unwrap();
-                                to_push
-                                    .dict_set_item("MessageType", "Attached".into())
-                                    .unwrap();
-                                to_push
-                                    .dict_set_item("Properties", i.1.try_into().unwrap())
-                                    .unwrap();
+                                let mut to_push = plist::Dictionary::new();
+                                to_push.insert("DeviceID".into(), i.1.device_id.into());
+                                to_push.insert("MessageType".into(), "Attached".into());
+                                to_push.insert(
+                                    "Properties".into(),
+                                    plist::Value::Dictionary(i.1.into()),
+                                );
 
-                                device_list.array_append_item(to_push).unwrap();
+                                device_list.push(plist::Value::Dictionary(to_push));
                             }
-                            let mut upper = Plist::new_dict();
-                            upper.dict_set_item("DeviceList", device_list).unwrap();
+                            let mut upper = plist::Dictionary::new();
+                            upper.insert("DeviceList".into(), plist::Value::Array(device_list));
                             let res = RawPacket::new(upper, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
                             socket.write_all(&res).await.unwrap();
@@ -366,12 +368,13 @@ async fn handle_stream(
                         "ReadPairRecord" => {
                             let lock = data.lock().await;
                             let pair_file = match lock.get_pairing_record(
-                                parsed
-                                    .plist
-                                    .dict_get_item("PairRecordID")
-                                    .unwrap()
-                                    .get_string_val()
-                                    .unwrap(),
+                                match parsed.plist.get("PairRecordID") {
+                                    Some(plist::Value::String(p)) => p.to_owned(),
+                                    _ => {
+                                        warn!("Request did not contain PairRecordID");
+                                        return;
+                                    }
+                                },
                             ) {
                                 Ok(pair_file) => pair_file,
                                 Err(_) => {
@@ -380,8 +383,8 @@ async fn handle_stream(
                                 }
                             };
 
-                            let mut p = Plist::new_dict();
-                            p.dict_set_item("PairRecordData", pair_file.into()).unwrap();
+                            let mut p = plist::Dictionary::new();
+                            p.insert("PairRecordData".into(), plist::Value::Data(pair_file));
 
                             let res = RawPacket::new(p, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
@@ -394,8 +397,8 @@ async fn handle_stream(
                             let lock = data.lock().await;
                             let buid = lock.get_buid().unwrap();
 
-                            let mut p = Plist::new_dict();
-                            p.dict_set_item("BUID", buid.into()).unwrap();
+                            let mut p = plist::Dictionary::new();
+                            p.insert("BUID".into(), buid.into());
 
                             let res = RawPacket::new(p, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
@@ -405,27 +408,42 @@ async fn handle_stream(
                             return;
                         }
                         "Connect" => {
-                            let connection_port = parsed
-                                .plist
-                                .dict_get_item("PortNumber")
-                                .unwrap()
-                                .get_uint_val()
-                                .unwrap();
-                            let device_id = parsed
-                                .plist
-                                .dict_get_item("DeviceID")
-                                .unwrap()
-                                .get_uint_val()
-                                .unwrap();
+                            let connection_port = match parsed.plist.get("PortNumber") {
+                                Some(plist::Value::Integer(p)) => match p.as_unsigned() {
+                                    Some(p) => p,
+                                    None => {
+                                        warn!("PortNumber is not unsigned!");
+                                        return;
+                                    }
+                                },
+                                _ => {
+                                    warn!("Packet didn't contain PortNumber");
+                                    return;
+                                }
+                            };
+
+                            let device_id = match parsed.plist.get("DeviceID") {
+                                Some(plist::Value::Integer(d)) => match d.as_unsigned() {
+                                    Some(d) => d,
+                                    None => {
+                                        warn!("DeviceID is not unsigned!");
+                                        return;
+                                    }
+                                },
+                                _ => {
+                                    warn!("Packet didn't contain DeviceID");
+                                    return;
+                                }
+                            };
 
                             let connection_port = connection_port as u16;
                             let connection_port = connection_port.to_be();
 
                             info!("Client is establishing connection to port {connection_port}");
-                            let mut central_data = data.lock().await;
+                            let central_data = data.lock().await;
                             if let Some(device) = central_data.get_device_by_id(device_id) {
-                                let network_address = device.network_address.clone();
-                                let device_id = device.device_id.clone();
+                                let network_address = device.network_address;
+                                let device_id = device.device_id;
                                 std::mem::drop(central_data);
 
                                 info!("Connecting to device {}", device_id);
@@ -436,11 +454,9 @@ async fn handle_stream(
                                             .await
                                         {
                                             Ok(mut stream) => {
-                                                let mut p = Plist::new_dict();
-                                                p.dict_set_item("MessageType", "Result".into())
-                                                    .unwrap();
-                                                p.dict_set_item("Number", Plist::new_uint(0))
-                                                    .unwrap();
+                                                let mut p = plist::Dictionary::new();
+                                                p.insert("MessageType".into(), "Result".into());
+                                                p.insert("Number".into(), 0.into());
 
                                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                                 let res: Vec<u8> = res.into();
@@ -458,11 +474,9 @@ async fn handle_stream(
                                             }
                                             Err(e) => {
                                                 error!("Unable to connect to device {device_id} port {connection_port}: {e:?}");
-                                                let mut p = Plist::new_dict();
-                                                p.dict_set_item("MessageType", "Result".into())
-                                                    .unwrap();
-                                                p.dict_set_item("Number", Plist::new_uint(1))
-                                                    .unwrap();
+                                                let mut p = plist::Dictionary::new();
+                                                p.insert("MessageType".into(), "Result".into());
+                                                p.insert("Number".into(), 1.into()).unwrap();
 
                                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                                 let res: Vec<u8> = res.into();
@@ -477,9 +491,9 @@ async fn handle_stream(
                                     }
                                 }
                             } else {
-                                let mut p = Plist::new_dict();
-                                p.dict_set_item("MessageType", "Result".into()).unwrap();
-                                p.dict_set_item("Number", Plist::new_uint(1)).unwrap();
+                                let mut p = plist::Dictionary::new();
+                                p.insert("MessageType".into(), "Result".into());
+                                p.insert("Number".into(), 1.into());
 
                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                 let res: Vec<u8> = res.into();

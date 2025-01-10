@@ -1,7 +1,6 @@
 // jkcoxson
 
 use log::warn;
-use plist_plus::Plist;
 
 #[derive(Debug)]
 pub struct RawPacket {
@@ -9,13 +8,20 @@ pub struct RawPacket {
     pub version: u32,
     pub message: u32,
     pub tag: u32,
-    pub plist: Plist,
+    pub plist: plist::Dictionary,
+}
+
+fn plist_to_bytes(p: &plist::Dictionary) -> Vec<u8> {
+    let buf = Vec::new();
+    let mut writer = std::io::BufWriter::new(buf);
+    plist::to_writer_xml(&mut writer, &p).unwrap();
+
+    writer.into_inner().unwrap()
 }
 
 impl RawPacket {
-    pub fn new(plist: Plist, version: u32, message: u32, tag: u32) -> RawPacket {
-        let plist_bytes = plist.to_string();
-        let plist_bytes = plist_bytes.as_bytes();
+    pub fn new(plist: plist::Dictionary, version: u32, message: u32, tag: u32) -> RawPacket {
+        let plist_bytes = plist_to_bytes(&plist);
         let size = plist_bytes.len() as u32 + 16;
         RawPacket {
             size,
@@ -34,7 +40,7 @@ impl From<RawPacket> for Vec<u8> {
         packet.extend_from_slice(&raw_packet.version.to_le_bytes());
         packet.extend_from_slice(&raw_packet.message.to_le_bytes());
         packet.extend_from_slice(&raw_packet.tag.to_le_bytes());
-        packet.extend_from_slice(raw_packet.plist.to_string().as_bytes());
+        packet.extend_from_slice(&plist_to_bytes(&raw_packet.plist));
         packet
     }
 }
@@ -99,7 +105,7 @@ impl TryFrom<&[u8]> for RawPacket {
         });
 
         let plist = &packet[16..packet_size as usize];
-        let plist = if let Ok(p) = Plist::from_xml(String::from_utf8_lossy(plist).to_string()) {
+        let plist = if let Ok(p) = plist::from_bytes(plist) {
             p
         } else {
             warn!("Failed to parse packet plist");

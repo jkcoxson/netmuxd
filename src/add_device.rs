@@ -48,4 +48,34 @@ fn main() {
         )
     };
     stream.write_all(&request).unwrap();
+
+    let mut buf = Vec::new();
+    let size = stream.read_to_end(&mut buf).unwrap();
+    println!("{:?}", buf);
+
+    let buffer = &mut buf[0..size].to_vec();
+    if size == 16 {
+        let packet_size = &buffer[0..4];
+        let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
+        // Pull the rest of the packet
+        let mut packet = vec![0; packet_size as usize];
+        let _ = stream.read(&mut packet).unwrap();
+        // Append the packet to the buffer
+        buffer.append(&mut packet);
+    }
+
+    println!("{:?}", buffer);
+    let parsed: raw_packet::RawPacket = buffer.try_into().unwrap();
+    match parsed.plist.get("Result") {
+        Some(plist::Value::Integer(r)) => {
+            if r.as_unsigned().unwrap() == 1 {
+                println!("Success");
+            } else {
+                println!("Failure");
+            }
+        }
+        _ => {
+            println!("Failure");
+        }
+    }
 }

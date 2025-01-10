@@ -301,19 +301,29 @@ async fn handle_stream(
                             };
 
                             let mut central_data = data.lock().await;
-                            if let Err(e) = central_data.add_network_device(
+                            let ip_address = match ip_address.parse() {
+                                Ok(i) => i,
+                                Err(_) => {
+                                    warn!("Bad IP requested: {ip_address}");
+                                    return;
+                                }
+                            };
+                            let res = match central_data.add_network_device(
                                 udid.to_owned(),
-                                ip_address.parse().unwrap(),
+                                ip_address,
                                 service_name.to_owned(),
                                 connection_type.to_owned(),
                                 data.clone(),
                             ) {
-                                error!("Failed to add requested device to muxer: {e:?}");
-                                return;
-                            }
+                                Ok(_) => 1,
+                                Err(e) => {
+                                    error!("Failed to add requested device to muxer: {e:?}");
+                                    0
+                                }
+                            };
 
                             let mut p = plist::Dictionary::new();
-                            p.insert("Result".into(), "OK".into());
+                            p.insert("Result".into(), res.into());
                             let res: Vec<u8> = RawPacket::new(p, 1, 8, parsed.tag).into();
                             if let Err(e) = socket.write_all(&res).await {
                                 warn!("Failed to send back success message: {e:?}");

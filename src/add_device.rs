@@ -51,7 +51,6 @@ fn main() {
 
     let mut buf = Vec::new();
     let size = stream.read_to_end(&mut buf).unwrap();
-    println!("{:?}", buf);
 
     let buffer = &mut buf[0..size].to_vec();
     if size == 16 {
@@ -64,7 +63,6 @@ fn main() {
         buffer.append(&mut packet);
     }
 
-    println!("{:?}", buffer);
     let parsed: raw_packet::RawPacket = buffer.try_into().unwrap();
     match parsed.plist.get("Result") {
         Some(plist::Value::Integer(r)) => {

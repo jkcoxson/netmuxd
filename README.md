@@ -3,9 +3,8 @@
 A replacement/addition to usbmuxd which is a reimplementation of Apple's usbmuxd on MacOS
 
 # Building
-Make sure both [rusty_libimobiledevice](https://github.com/jkcoxson/rusty_libimobiledevice) and [plist_plus](https://github.com/jkcoxson/plist_plus) are buildable. Instructions are in their respective readme's.
 
-Run ``cargo build`` to generate binaries. It is located at ``target/debug/netmuxd``
+Run ``cargo build --release`` to generate binaries. They will be generated at ``target/release/netmuxd``
 
 # Usage
 You need to pair your device beforehand using another muxer like [usbmuxd](https://github.com/libimobiledevice/usbmuxd).
@@ -30,6 +29,5 @@ The best way to set this up for that use case is as follows:
 
 ## License
 
-Due to the licensing of libimobiledevice (which this program depends on),
-this code is licensed under the LGPL 2.1 license. You may use netmuxd's
+This code is licensed under the LGPL 2.1 license. You may use netmuxd's
 code how you will, but binaries must be distributed under and with that license.

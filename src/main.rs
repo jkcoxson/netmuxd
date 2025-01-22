@@ -6,7 +6,7 @@ use std::{fs, os::unix::prelude::PermissionsExt};
 
 use crate::raw_packet::RawPacket;
 use devices::SharedDevices;
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::Mutex,
@@ -215,7 +215,7 @@ async fn handle_stream(
             };
             trace!("Recv'd {size} bytes");
             if size == 0 {
-                info!("Received size is zero, closing connection");
+                debug!("Received size is zero, closing connection");
                 return;
             }
 

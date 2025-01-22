@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc};
 
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use crate::heartbeat;
@@ -187,13 +187,13 @@ impl SharedDevices {
             plist::to_writer_xml(f, &new_plist).unwrap();
         }
         // Read the file to a string
-        info!("Reading SystemConfiguration.plist");
+        debug!("Reading SystemConfiguration.plist");
         let mut file = std::fs::File::open(path).unwrap();
         let mut contents = Vec::new();
         file.read_to_end(&mut contents).unwrap();
 
         // Parse the string into a plist
-        info!("Parsing SystemConfiguration.plist");
+        debug!("Parsing SystemConfiguration.plist");
         let plist = plist::from_bytes::<plist::Dictionary>(&contents).unwrap();
         match plist.get("SystemBUID") {
             Some(plist::Value::String(b)) => Ok(b.to_owned()),

@@ -368,8 +368,7 @@ async fn handle_stream(
                             let res: Vec<u8> = res.into();
                             socket.write_all(&res).await.unwrap();
 
-                            // No more further communication for this packet
-                            return;
+                            continue;
                         }
                         "Listen" => {
                             // The full functionality of this is not implemented. We will just maintain the connection.
@@ -400,8 +399,7 @@ async fn handle_stream(
                             let res: Vec<u8> = res.into();
                             socket.write_all(&res).await.unwrap();
 
-                            // No more further communication for this packet
-                            return;
+                            continue;
                         }
                         "ReadBUID" => {
                             let lock = data.lock().await;
@@ -414,8 +412,7 @@ async fn handle_stream(
                             let res: Vec<u8> = res.into();
                             socket.write_all(&res).await.unwrap();
 
-                            // No more further communication for this packet
-                            return;
+                            continue;
                         }
                         "Connect" => {
                             let connection_port = match parsed.plist.get("PortNumber") {
@@ -480,7 +477,7 @@ async fn handle_stream(
                                                 {
                                                     info!("Bidirectional stream stopped: {e:?}");
                                                 }
-                                                return;
+                                                continue;
                                             }
                                             Err(e) => {
                                                 error!("Unable to connect to device {device_id} port {connection_port}: {e:?}");
@@ -492,7 +489,7 @@ async fn handle_stream(
                                                 let res: Vec<u8> = res.into();
                                                 socket.write_all(&res).await.unwrap();
 
-                                                return;
+                                                continue;
                                             }
                                         }
                                     }
@@ -509,7 +506,7 @@ async fn handle_stream(
                                 let res: Vec<u8> = res.into();
                                 socket.write_all(&res).await.unwrap();
 
-                                return;
+                                continue;
                             }
                         }
                         _ => {

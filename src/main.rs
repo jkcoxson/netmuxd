@@ -483,7 +483,7 @@ async fn handle_stream(
                                                 error!("Unable to connect to device {device_id} port {connection_port}: {e:?}");
                                                 let mut p = plist::Dictionary::new();
                                                 p.insert("MessageType".into(), "Result".into());
-                                                p.insert("Number".into(), 1.into()).unwrap();
+                                                p.insert("Number".into(), 1.into());
 
                                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                                 let res: Vec<u8> = res.into();

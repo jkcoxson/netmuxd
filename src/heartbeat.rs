@@ -42,11 +42,11 @@ pub async fn heartbeat(
     idevice.start_session(&pairing_file).await?;
 
     tokio::spawn(async {
-        let mut interval = 15;
+        let mut interval = 10;
         let mut heartbeat_client = HeartbeatClient { idevice };
         let pls_stop = pls_stop;
         loop {
-            match heartbeat_client.get_marco(interval).await {
+            match heartbeat_client.get_marco(interval + 5).await {
                 Ok(i) => {
                     interval = i;
                 }

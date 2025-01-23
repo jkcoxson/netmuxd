@@ -308,13 +308,16 @@ async fn handle_stream(
                                     return;
                                 }
                             };
-                            let res = match central_data.add_network_device(
-                                udid.to_owned(),
-                                ip_address,
-                                service_name.to_owned(),
-                                connection_type.to_owned(),
-                                data.clone(),
-                            ) {
+                            let res = match central_data
+                                .add_network_device(
+                                    udid.to_owned(),
+                                    ip_address,
+                                    service_name.to_owned(),
+                                    connection_type.to_owned(),
+                                    data.clone(),
+                                )
+                                .await
+                            {
                                 Ok(_) => 1,
                                 Err(e) => {
                                     error!("Failed to add requested device to muxer: {e:?}");

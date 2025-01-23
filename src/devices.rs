@@ -70,7 +70,7 @@ impl SharedDevices {
             paired_udids: Vec::new(),
         }
     }
-    pub fn add_network_device(
+    pub async fn add_network_device(
         &mut self,
         udid: String,
         network_address: IpAddr,
@@ -88,12 +88,7 @@ impl SharedDevices {
         let pairing_file = idevice::pairing_file::PairingFile::from_bytes(&pairing_file)?;
 
         let handle = if self.use_heartbeat {
-            Some(heartbeat::heartbeat(
-                network_address,
-                udid.clone(),
-                pairing_file,
-                data,
-            )?)
+            Some(heartbeat::heartbeat(network_address, udid.clone(), pairing_file, data).await?)
         } else {
             None
         };

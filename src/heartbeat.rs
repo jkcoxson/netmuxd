@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::devices::SharedDevices;
 
-pub fn heartbeat(
+pub async fn heartbeat(
     ip_addr: IpAddr,
     udid: String,
     pairing_file: idevice::pairing_file::PairingFile,
@@ -22,43 +22,52 @@ pub fn heartbeat(
 
     let socket = SocketAddr::new(ip_addr, idevice::lockdownd::LOCKDOWND_PORT);
 
-    let socket = std::net::TcpStream::connect(socket)?;
+    let socket = tokio::net::TcpStream::connect(socket).await?;
     let socket = Box::new(socket);
     let idevice = Idevice::new(socket, "netmuxd");
 
     let mut lockdown_client = LockdowndClient { idevice };
-    lockdown_client.start_session(&pairing_file)?;
+    lockdown_client.start_session(&pairing_file).await?;
 
     let (port, _) = lockdown_client
         .start_service("com.apple.mobile.heartbeat")
+        .await
         .unwrap();
 
     let socket = SocketAddr::new(ip_addr, port);
-    let socket = std::net::TcpStream::connect(socket)?;
+    let socket = tokio::net::TcpStream::connect(socket).await?;
     let socket = Box::new(socket);
     let mut idevice = Idevice::new(socket, "heartbeat_client");
 
-    idevice.start_session(&pairing_file)?;
+    idevice.start_session(&pairing_file).await?;
 
-    let mut heartbeat_client = HeartbeatClient { idevice };
-
-    tokio::task::spawn_blocking(move || loop {
-        if let Err(e) = heartbeat_client.get_marco() {
-            info!("Heartbeat recv failed: {:?}", e);
-            tokio::spawn(async move {
-                remove_from_data(data, udid).await;
-            });
-            break;
-        }
-        if *pls_stop.lock().unwrap() {
-            break;
-        }
-        if let Err(e) = heartbeat_client.send_polo() {
-            info!("Heartbeat send failed: {:?}", e);
-            tokio::spawn(async move {
-                remove_from_data(data, udid).await;
-            });
-            return;
+    tokio::spawn(async {
+        let mut interval = 15;
+        let mut heartbeat_client = HeartbeatClient { idevice };
+        let pls_stop = pls_stop;
+        loop {
+            match heartbeat_client.get_marco(interval).await {
+                Ok(i) => {
+                    interval = i;
+                }
+                Err(e) => {
+                    info!("Heartbeat recv failed: {:?}", e);
+                    tokio::spawn(async move {
+                        remove_from_data(data, udid).await;
+                    });
+                    break;
+                }
+            }
+            if *pls_stop.lock().unwrap() {
+                break;
+            }
+            if let Err(e) = heartbeat_client.send_polo().await {
+                info!("Heartbeat send failed: {:?}", e);
+                tokio::spawn(async move {
+                    remove_from_data(data, udid).await;
+                });
+                return;
+            }
         }
     });
     tokio::spawn(async move {

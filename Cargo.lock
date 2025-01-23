@@ -816,9 +816,9 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "idevice"
-version = "0.1.5"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb95ea23cf6393fd899c5f22bb69a657b89a0e581e8fb70f7668dd3c605ab13c"
+checksum = "16d8f553f3f6a8525c42e7c5e68336651a9554cffd9427c94792232749ee8cd7"
 dependencies = [
  "env_logger",
  "log",
@@ -826,6 +826,8 @@ dependencies = [
  "plist",
  "serde",
  "thiserror",
+ "tokio",
+ "tokio-openssl",
 ]
 
 [[package]]
@@ -1004,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "netmuxd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "colored",
  "env_logger",
@@ -1517,6 +1519,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.96",
+]
+
+[[package]]
+name = "tokio-openssl"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59df6849caa43bb7567f9a36f863c447d95a11d5903c9cc334ba32576a27eadd"
+dependencies = [
+ "openssl",
+ "openssl-sys",
+ "tokio",
 ]
 
 [[package]]

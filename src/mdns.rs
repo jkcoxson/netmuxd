@@ -54,13 +54,16 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                 }
                 println!("Adding device {}", udid);
 
-                if let Err(e) = lock.add_network_device(
-                    udid.clone(),
-                    addr,
-                    service_name.clone(),
-                    "Network".to_string(),
-                    data.clone(),
-                ) {
+                if let Err(e) = lock
+                    .add_network_device(
+                        udid.clone(),
+                        addr,
+                        service_name.clone(),
+                        "Network".to_string(),
+                        data.clone(),
+                    )
+                    .await
+                {
                     warn!("Failed to add {udid} to muxer: {e:?}");
                 }
             }
@@ -112,6 +115,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                     "Network".to_string(),
                     data.clone(),
                 )
+                .await
                 .unwrap();
             }
         }

@@ -1,6 +1,6 @@
 // jkcoxson
 
-use log::warn;
+use log::{debug, warn};
 
 #[derive(Debug)]
 pub struct RawPacket {
@@ -56,6 +56,8 @@ impl TryFrom<&mut Vec<u8>> for RawPacket {
 impl TryFrom<&[u8]> for RawPacket {
     type Error = ();
     fn try_from(packet: &[u8]) -> Result<Self, ()> {
+        debug!("Parsing raw packet: {:02X?}", packet);
+
         // Determine if we have enough data to parse
         if packet.len() < 16 {
             warn!("Not enough data to parse a raw packet header");

@@ -119,28 +119,6 @@ impl SharedDevices {
         self.devices.values().find(|x| x.device_id == id)
     }
 
-    #[cfg(feature = "usb")]
-    pub fn add_usb_device(&mut self, udid: String, _data: Arc<Mutex<Self>>) {
-        self.last_index += 1;
-        self.last_interface_index += 1;
-
-        let dev = MuxerDevice {
-            connection_type: "USB".to_string(),
-            device_id: self.last_index,
-            service_name: None,
-            interface_index: self.last_interface_index,
-            network_address: None,
-            serial_number: udid,
-            heartbeat_handle: None,
-            connection_speed: None,
-            location_id: None,
-            product_id: None,
-        };
-
-        info!("Adding device: {:?}", dev.serial_number);
-        self.devices.insert(dev.serial_number.clone(), dev);
-    }
-
     pub fn remove_device(&mut self, udid: &String) {
         if !self.devices.contains_key(udid) {
             warn!("Device isn't in the muxer, skipping");
@@ -285,15 +263,6 @@ impl SharedDevices {
         }
         trace!("No UDID found after a re-cache");
         Err(())
-    }
-
-    #[cfg(feature = "usb")]
-    pub fn check_udid(&mut self, udid: String) -> bool {
-        if self.paired_udids.contains(&udid) {
-            return true;
-        }
-        self.update_cache();
-        self.paired_udids.contains(&udid)
     }
 }
 

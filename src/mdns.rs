@@ -47,7 +47,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
 
             let mac_addr = name.split("@").collect::<Vec<&str>>()[0];
             let mut lock = data.lock().await;
-            if let Ok(udid) = lock.get_udid_from_mac(mac_addr.to_string()) {
+            if let Ok(udid) = lock.get_udid_from_mac(mac_addr.to_string()).await {
                 if lock.devices.contains_key(&udid) {
                     info!("Device has already been added to muxer, skipping");
                     continue;
@@ -101,7 +101,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
             }
             let mac_addr = mac_addr.unwrap();
             let mut lock = data.lock().await;
-            if let Ok(udid) = lock.get_udid_from_mac(mac_addr.to_string()) {
+            if let Ok(udid) = lock.get_udid_from_mac(mac_addr.to_string()).await {
                 if lock.devices.contains_key(&udid) {
                     info!("Device has already been added to muxer, skipping");
                     continue;

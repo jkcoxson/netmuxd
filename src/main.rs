@@ -16,8 +16,6 @@ mod devices;
 mod heartbeat;
 mod mdns;
 mod raw_packet;
-#[cfg(feature = "usb")]
-mod usb;
 
 #[tokio::main]
 async fn main() {
@@ -38,8 +36,6 @@ async fn main() {
     let mut use_unix = true;
 
     let mut use_mdns = true;
-    #[cfg(feature = "usb")]
-    let mut use_usb = false;
 
     // Loop through args
     let mut i = 0;
@@ -64,11 +60,6 @@ async fn main() {
             }
             "--disable-mdns" => {
                 use_mdns = false;
-                i += 1;
-            }
-            #[cfg(feature = "usb")]
-            "--enable-usb" => {
-                use_usb = true;
                 i += 1;
             }
             "--disable-heartbeat" => {
@@ -111,8 +102,6 @@ async fn main() {
     ));
     info!("Created new central data");
     let data_clone = data.clone();
-    #[cfg(feature = "usb")]
-    let usb_data = data.clone();
 
     if let Some(host) = host.clone() {
         let tcp_data = data.clone();
@@ -167,11 +156,6 @@ async fn main() {
                 handle_stream(socket, data.clone()).await;
             }
         });
-    }
-
-    #[cfg(feature = "usb")]
-    if use_usb {
-        usb::start_listener(usb_data);
     }
 
     if use_mdns {

@@ -369,7 +369,10 @@ async fn handle_stream(
                             upper.insert("DeviceList".into(), plist::Value::Array(device_list));
                             let res = RawPacket::new(upper, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
-                            socket.write_all(&res).await.unwrap();
+                            if let Err(e) = socket.write_all(&res).await {
+                                warn!("Failed to send response to client: {e:}");
+                                return;
+                            }
 
                             continue;
                         }
@@ -400,7 +403,10 @@ async fn handle_stream(
 
                             let res = RawPacket::new(p, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
-                            socket.write_all(&res).await.unwrap();
+                            if let Err(e) = socket.write_all(&res).await {
+                                warn!("Failed to send response to client: {e:?}");
+                                return;
+                            }
 
                             continue;
                         }
@@ -413,7 +419,10 @@ async fn handle_stream(
 
                             let res = RawPacket::new(p, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
-                            socket.write_all(&res).await.unwrap();
+                            if let Err(e) = socket.write_all(&res).await {
+                                warn!("Failed to send response to client: {e:?}");
+                                return;
+                            }
 
                             continue;
                         }
@@ -470,7 +479,12 @@ async fn handle_stream(
 
                                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                                 let res: Vec<u8> = res.into();
-                                                socket.write_all(&res).await.unwrap();
+                                                if let Err(e) = socket.write_all(&res).await {
+                                                    warn!(
+                                                        "Failed to send response to client: {e:?}"
+                                                    );
+                                                    return;
+                                                }
 
                                                 if let Err(e) = tokio::io::copy_bidirectional(
                                                     &mut stream,
@@ -490,7 +504,11 @@ async fn handle_stream(
 
                                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                                 let res: Vec<u8> = res.into();
-                                                socket.write_all(&res).await.unwrap();
+                                                if let Err(e) = socket.write_all(&res).await {
+                                                    warn!(
+                                                        "Failed to send response to client: {e:?}"
+                                                    );
+                                                }
 
                                                 continue;
                                             }
@@ -507,7 +525,9 @@ async fn handle_stream(
 
                                 let res = RawPacket::new(p, 1, 8, parsed.tag);
                                 let res: Vec<u8> = res.into();
-                                socket.write_all(&res).await.unwrap();
+                                if let Err(e) = socket.write_all(&res).await {
+                                    warn!("Failed to send response to client: {e:?}");
+                                }
 
                                 continue;
                             }

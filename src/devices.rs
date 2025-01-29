@@ -269,7 +269,7 @@ impl SharedDevices {
         }
     }
 
-    pub fn get_udid_from_mac(&mut self, mac: String) -> Result<String, ()> {
+    pub async fn get_udid_from_mac(&mut self, mac: String) -> Result<String, ()> {
         info!("Getting UDID for MAC: {:?}", mac);
         if let Some(udid) = self.known_mac_addresses.get(&mac) {
             info!("Found UDID: {:?}", udid);
@@ -277,7 +277,7 @@ impl SharedDevices {
         } else {
             trace!("No UDID found for {:?} in cache, re-caching...", mac);
         }
-        self.update_cache();
+        self.update_cache().await;
 
         if let Some(udid) = self.known_mac_addresses.get(&mac) {
             info!("Found UDID: {:?}", udid);

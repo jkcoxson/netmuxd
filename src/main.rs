@@ -106,10 +106,9 @@ async fn main() {
     }
     info!("Collected arguments, proceeding");
 
-    let data = Arc::new(Mutex::new(devices::SharedDevices::new(
-        plist_storage,
-        use_heartbeat,
-    )));
+    let data = Arc::new(Mutex::new(
+        devices::SharedDevices::new(plist_storage, use_heartbeat).await,
+    ));
     info!("Created new central data");
     let data_clone = data.clone();
     #[cfg(feature = "usb")]
@@ -414,7 +413,7 @@ async fn handle_stream(
                         }
                         "ReadBUID" => {
                             let lock = data.lock().await;
-                            let buid = lock.get_buid().unwrap();
+                            let buid = lock.get_buid().await.unwrap();
 
                             let mut p = plist::Dictionary::new();
                             p.insert("BUID".into(), buid.into());

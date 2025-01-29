@@ -39,7 +39,7 @@ pub struct MuxerDevice {
 }
 
 impl SharedDevices {
-    pub fn new(plist_storage: Option<String>, use_heartbeat: bool) -> Self {
+    pub async fn new(plist_storage: Option<String>, use_heartbeat: bool) -> Self {
         let plist_storage = if let Some(plist_storage) = plist_storage {
             info!("Plist storage specified, ensure the environment is aware");
             plist_storage
@@ -55,9 +55,11 @@ impl SharedDevices {
         };
 
         // Make sure the directory exists
-        if std::fs::read_dir(&plist_storage).is_err() {
+        if tokio::fs::read_dir(&plist_storage).await.is_err() {
             // Create the directory
-            std::fs::create_dir(&plist_storage).expect("Unable to create plist storage folder");
+            tokio::fs::create_dir(&plist_storage)
+                .await
+                .expect("Unable to create plist storage folder");
             info!("Created plist storage!");
         } else {
             trace!("Plist storage exists");
@@ -173,7 +175,7 @@ impl SharedDevices {
         file.read_to_end(&mut contents).await?;
         Ok(contents)
     }
-    pub fn get_buid(&self) -> Result<String, std::io::Error> {
+    pub async fn get_buid(&self) -> Result<String, std::io::Error> {
         let path = PathBuf::from(self.plist_storage.clone()).join("SystemConfiguration.plist");
         if !path.exists() {
             info!("No SystemConfiguration.plist found, generating BUID");
@@ -202,7 +204,7 @@ impl SharedDevices {
         }
     }
 
-    pub fn update_cache(&mut self) {
+    pub async fn update_cache(&mut self) {
         // Iterate through all files in the plist storage, loading them into memory
         trace!("Updating plist cache");
         let path = PathBuf::from(self.plist_storage.clone());
@@ -211,9 +213,9 @@ impl SharedDevices {
             let path = entry.path();
             trace!("Attempting to read {:?}", path);
             if path.is_file() {
-                let mut file = std::fs::File::open(&path).unwrap();
+                let mut file = tokio::fs::File::open(&path).await.unwrap();
                 let mut contents = Vec::new();
-                let plist: plist::Dictionary = match file.read_to_end(&mut contents) {
+                let plist: plist::Dictionary = match file.read_to_end(&mut contents).await {
                     Ok(_) => plist::from_bytes(&contents).unwrap(),
                     Err(e) => {
                         trace!("Could not read plist to memory: {e:?}");

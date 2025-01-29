@@ -3,7 +3,10 @@
 use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc};
 
 use log::{debug, info, trace, warn};
-use tokio::sync::{mpsc::UnboundedSender, Mutex};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{mpsc::UnboundedSender, Mutex},
+};
 
 use crate::heartbeat;
 
@@ -84,7 +87,7 @@ impl SharedDevices {
         }
         self.last_index += 1;
         self.last_interface_index += 1;
-        let pairing_file = self.get_pairing_record(udid.clone())?;
+        let pairing_file = self.get_pairing_record(udid.clone()).await?;
         let pairing_file = idevice::pairing_file::PairingFile::from_bytes(&pairing_file)?;
 
         let handle = if self.use_heartbeat {
@@ -153,7 +156,7 @@ impl SharedDevices {
             .unwrap();
         self.devices.remove(udid);
     }
-    pub fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, std::io::Error> {
+    pub async fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, std::io::Error> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
         info!("Attempting to read pairing file: {path:?}");
         if !path.exists() {
@@ -165,9 +168,9 @@ impl SharedDevices {
         }
         // Read the file
         info!("Reading pairing record for device: {:?}", udid);
-        let mut file = std::fs::File::open(path).unwrap();
+        let mut file = tokio::fs::File::open(path).await?;
         let mut contents = Vec::new();
-        file.read_to_end(&mut contents).unwrap();
+        file.read_to_end(&mut contents).await?;
         Ok(contents)
     }
     pub fn get_buid(&self) -> Result<String, std::io::Error> {

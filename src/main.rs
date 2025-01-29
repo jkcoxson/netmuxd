@@ -382,21 +382,23 @@ async fn handle_stream(
                         }
                         "ReadPairRecord" => {
                             let lock = data.lock().await;
-                            let pair_file = match lock.get_pairing_record(
-                                match parsed.plist.get("PairRecordID") {
+                            let pair_file = match lock
+                                .get_pairing_record(match parsed.plist.get("PairRecordID") {
                                     Some(plist::Value::String(p)) => p.to_owned(),
                                     _ => {
                                         warn!("Request did not contain PairRecordID");
                                         return;
                                     }
-                                },
-                            ) {
+                                })
+                                .await
+                            {
                                 Ok(pair_file) => pair_file,
                                 Err(_) => {
                                     // Unimplemented
                                     return;
                                 }
                             };
+                            std::mem::drop(lock);
 
                             let mut p = plist::Dictionary::new();
                             p.insert("PairRecordData".into(), plist::Value::Data(pair_file));

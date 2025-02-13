@@ -1,7 +1,7 @@
 // jkcoxson
 
 use crate::devices::SharedDevices;
-use log::info;
+use log::{info, warn};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -25,8 +25,6 @@ const SERVICE_PROTOCOL: &str = "tcp";
 
 #[cfg(feature = "zeroconf")]
 pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
-    use log::warn;
-
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
     println!("Starting mDNS discovery for {} with zeroconf", service_name);
 
@@ -110,7 +108,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
 
                 if let Err(e) = lock
                     .add_network_device(
-                        udid,
+                        udid.clone(),
                         addr,
                         service_name.clone(),
                         "Network".to_string(),

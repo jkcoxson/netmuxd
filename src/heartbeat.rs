@@ -20,7 +20,7 @@ pub async fn heartbeat(
     let pls_stop = Arc::new(Mutex::new(false));
     let pls_stop_clone = pls_stop.clone();
 
-    let socket = SocketAddr::new(ip_addr, idevice::lockdownd::LOCKDOWND_PORT);
+    let socket = SocketAddr::new(ip_addr, LockdowndClient::LOCKDOWND_PORT);
 
     let socket = tokio::net::TcpStream::connect(socket).await?;
     let socket = Box::new(socket);

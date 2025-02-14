@@ -28,7 +28,9 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
     println!("Starting mDNS discovery for {} with zeroconf", service_name);
 
-    let mut browser = MdnsBrowser::new(ServiceType::new(SERVICE_NAME, SERVICE_PROTOCOL).unwrap());
+    let mut browser = MdnsBrowser::new(
+        ServiceType::new(SERVICE_NAME, SERVICE_PROTOCOL).expect("Unable to start mDNS browse"),
+    );
     loop {
         let result = browser.browse_async().await;
 
@@ -39,8 +41,20 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                 continue;
             }
             let addr = match service.address() {
-                addr if addr.contains(":") => IpAddr::V6(addr.parse().unwrap()),
-                addr => IpAddr::V4(addr.parse().unwrap()),
+                addr if addr.contains(":") => IpAddr::V6(match addr.parse() {
+                    Ok(i) => i,
+                    Err(e) => {
+                        log::error!("Unable to parse IPv6 address: {e:?}");
+                        continue;
+                    }
+                }),
+                addr => IpAddr::V4(match addr.parse() {
+                    Ok(i) => i,
+                    Err(e) => {
+                        log::error!("Unable to parse IPv4 address: {e:?}");
+                        continue;
+                    }
+                }),
             };
 
             let mac_addr = name.split("@").collect::<Vec<&str>>()[0];
@@ -71,11 +85,13 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
 
 #[cfg(not(feature = "zeroconf"))]
 pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
+    use log::warn;
+
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
     println!("Starting mDNS discovery for {} with mdns", service_name);
 
     let stream = mdns::discover::all(&service_name, Duration::from_secs(5))
-        .unwrap()
+        .expect("Unable to start mDNS discover stream")
         .listen();
     pin_mut!(stream);
 
@@ -94,10 +110,13 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
             }
 
             // Look through paired devices for mac address
-            if mac_addr.is_none() {
-                continue;
+            match mac_addr {
+                Some(m) => m,
+                None => {
+                    warn!("Unable to get mac address for mDNS record");
+                    continue;
+                }
             }
-            let mac_addr = mac_addr.unwrap();
             let mut lock = data.lock().await;
             if let Ok(udid) = lock.get_udid_from_mac(mac_addr.to_string()).await {
                 if lock.devices.contains_key(&udid) {

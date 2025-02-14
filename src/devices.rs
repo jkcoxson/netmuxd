@@ -5,7 +5,7 @@ use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc}
 use log::{debug, info, trace, warn};
 use tokio::{
     io::AsyncReadExt,
-    sync::{mpsc::UnboundedSender, Mutex},
+    sync::{oneshot::Sender, Mutex},
 };
 
 use crate::heartbeat;
@@ -29,7 +29,7 @@ pub struct MuxerDevice {
 
     // Network types
     pub network_address: Option<IpAddr>,
-    pub heartbeat_handle: Option<UnboundedSender<()>>,
+    pub heartbeat_handle: Option<Sender<()>>,
     pub service_name: Option<String>,
 
     // USB types
@@ -125,16 +125,21 @@ impl SharedDevices {
             return;
         }
         info!("Removing device: {:?}", udid);
-        let _ = &self
-            .devices
-            .get(udid)
-            .unwrap()
-            .heartbeat_handle
-            .as_ref()
-            .unwrap()
-            .send(())
-            .unwrap();
-        self.devices.remove(udid);
+        match self.devices.remove(udid) {
+            Some(d) => match d.heartbeat_handle {
+                Some(h) => {
+                    if let Err(e) = h.send(()) {
+                        warn!("Couldn't send kill signal to heartbeat thread: {e:?}");
+                    }
+                }
+                None => {
+                    warn!("Heartbeat handle option has none, can't kill");
+                }
+            },
+            None => {
+                warn!("No heartbeat handle found for device");
+            }
+        };
     }
     pub async fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, std::io::Error> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
@@ -166,13 +171,22 @@ impl SharedDevices {
         }
         // Read the file to a string
         debug!("Reading SystemConfiguration.plist");
-        let mut file = std::fs::File::open(path).unwrap();
+        let mut file = std::fs::File::open(path)?;
         let mut contents = Vec::new();
-        file.read_to_end(&mut contents).unwrap();
+        file.read_to_end(&mut contents)?;
 
         // Parse the string into a plist
         debug!("Parsing SystemConfiguration.plist");
-        let plist = plist::from_bytes::<plist::Dictionary>(&contents).unwrap();
+        let plist = match plist::from_bytes::<plist::Dictionary>(&contents) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to parse plist: {e:?}");
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "unable to parse plist",
+                ));
+            }
+        };
         match plist.get("SystemBUID") {
             Some(plist::Value::String(b)) => Ok(b.to_owned()),
             _ => Err(std::io::Error::new(
@@ -187,14 +201,32 @@ impl SharedDevices {
         trace!("Updating plist cache");
         let path = PathBuf::from(self.plist_storage.clone());
         for entry in std::fs::read_dir(path).expect("Plist storage is unreadable!!") {
-            let entry = entry.unwrap();
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("Unable to read entry in plist storage: {e:?}");
+                    continue;
+                }
+            };
             let path = entry.path();
             trace!("Attempting to read {:?}", path);
             if path.is_file() {
-                let mut file = tokio::fs::File::open(&path).await.unwrap();
+                let mut file = match tokio::fs::File::open(&path).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!("Unable to read plist storage entry to memory: {e:?}");
+                        continue;
+                    }
+                };
                 let mut contents = Vec::new();
                 let plist: plist::Dictionary = match file.read_to_end(&mut contents).await {
-                    Ok(_) => plist::from_bytes(&contents).unwrap(),
+                    Ok(_) => match plist::from_bytes(&contents) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("Unable to parse entry file to plist: {e:?}");
+                            continue;
+                        }
+                    },
                     Err(e) => {
                         trace!("Could not read plist to memory: {e:?}");
                         continue;
@@ -223,9 +255,13 @@ impl SharedDevices {
                     // This is just used as a last resort, but might not be correct so we'll pass a warning
                     warn!("Using the file name as the UDID");
                     match path.file_name() {
-                        Some(f) => {
-                            f.to_str().unwrap().split('.').collect::<Vec<&str>>()[0].to_string()
-                        }
+                        Some(f) => match f.to_str() {
+                            Some(f) => f.split('.').collect::<Vec<&str>>()[0].to_string(),
+                            None => {
+                                warn!("Failed to get entry file name string");
+                                continue;
+                            }
+                        },
                         None => {
                             trace!("File had no name");
                             continue;
@@ -233,10 +269,16 @@ impl SharedDevices {
                     }
                 };
 
-                self.known_mac_addresses.insert(
-                    mac_addr.to_owned(),
-                    path.file_stem().unwrap().to_string_lossy().to_string(),
-                );
+                let stem = match path.file_stem() {
+                    Some(s) => s,
+                    None => {
+                        warn!("Failed to get file stem for entry");
+                        continue;
+                    }
+                };
+
+                self.known_mac_addresses
+                    .insert(mac_addr.to_owned(), stem.to_string_lossy().to_string());
                 if self.paired_udids.contains(&udid) {
                     trace!("Cache already contained this UDID");
                     continue;
@@ -277,7 +319,11 @@ impl From<&MuxerDevice> for plist::Dictionary {
         if device.connection_type == "Network" {
             p.insert(
                 "EscapedFullServiceName".into(),
-                device.service_name.clone().unwrap().into(),
+                device
+                    .service_name
+                    .clone()
+                    .expect("Network device, but no service name")
+                    .into(),
             );
         }
         p.insert("InterfaceIndex".into(), device.interface_index.into());
@@ -285,7 +331,10 @@ impl From<&MuxerDevice> for plist::Dictionary {
         // Reassemble the network address back into bytes
         if device.connection_type == "Network" {
             let mut data = [0u8; 152];
-            match device.network_address.unwrap() {
+            match device
+                .network_address
+                .expect("Network device, but no address")
+            {
                 IpAddr::V4(ip_addr) => {
                     data[0] = 0x02;
                     data[1] = 0x00;

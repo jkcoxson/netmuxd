@@ -42,15 +42,28 @@ async fn main() {
     while i < std::env::args().len() {
         match std::env::args().nth(i).unwrap().as_str() {
             "-p" | "--port" => {
-                port = std::env::args().nth(i + 1).unwrap().parse::<i32>().unwrap();
+                port = std::env::args()
+                    .nth(i + 1)
+                    .expect("port flag passed without number")
+                    .parse::<i32>()
+                    .expect("port isn't a number");
                 i += 2;
             }
             "--host" => {
-                host = Some(std::env::args().nth(i + 1).unwrap().to_string());
+                host = Some(
+                    std::env::args()
+                        .nth(i + 1)
+                        .expect("host flag passed without host")
+                        .to_string(),
+                );
                 i += 2;
             }
             "--plist-storage" => {
-                plist_storage = Some(std::env::args().nth(i + 1).unwrap());
+                plist_storage = Some(
+                    std::env::args()
+                        .nth(i + 1)
+                        .expect("flag passed without value"),
+                );
                 i += 1;
             }
             #[cfg(unix)]
@@ -110,7 +123,7 @@ async fn main() {
             // Create TcpListener
             let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
                 .await
-                .unwrap();
+                .expect("Unable to bind to TCP listener");
 
             println!("Listening on {}:{}", host, port);
             #[cfg(unix)]
@@ -137,10 +150,12 @@ async fn main() {
             std::fs::remove_file("/var/run/usbmuxd").unwrap_or_default();
             // Create UnixListener
             info!("Binding to new Unix socket");
-            let listener = tokio::net::UnixListener::bind("/var/run/usbmuxd").unwrap();
+            let listener = tokio::net::UnixListener::bind("/var/run/usbmuxd")
+                .expect("Unable to bind to unix socket");
             // Change the permission of the socket
             info!("Changing permissions of socket");
-            fs::set_permissions("/var/run/usbmuxd", fs::Permissions::from_mode(0o666)).unwrap();
+            fs::set_permissions("/var/run/usbmuxd", fs::Permissions::from_mode(0o666))
+                .expect("Unable to set socket file permissions");
 
             println!("Listening on /var/run/usbmuxd");
 
@@ -207,7 +222,14 @@ async fn handle_stream(
                 info!("Only read the header, pulling more bytes");
                 // Get the number of bytes to pull
                 let packet_size = &buffer[0..4];
-                let packet_size = u32::from_le_bytes(packet_size.try_into().unwrap());
+                let packet_size = match packet_size.try_into() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to read packet size: {e:?}");
+                        return;
+                    }
+                };
+                let packet_size = u32::from_le_bytes(packet_size);
                 info!("Packet size: {}", packet_size);
                 // Pull the rest of the packet
                 let mut packet = vec![0; packet_size as usize];
@@ -232,7 +254,7 @@ async fn handle_stream(
                     return;
                 }
             };
-            trace!("Recv'd plist: {parsed:?}");
+            trace!("Recv'd plist: {parsed:#?}");
 
             match current_directions {
                 Directions::None => {
@@ -397,7 +419,13 @@ async fn handle_stream(
                         }
                         "ReadBUID" => {
                             let lock = data.lock().await;
-                            let buid = lock.get_buid().await.unwrap();
+                            let buid = match lock.get_buid().await {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    log::error!("Failed to get buid: {e:?}");
+                                    return;
+                                }
+                            };
 
                             let mut p = plist::Dictionary::new();
                             p.insert("BUID".into(), buid.into());

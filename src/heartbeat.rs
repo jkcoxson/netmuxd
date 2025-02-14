@@ -1,12 +1,12 @@
 // jkcoxson
 
 use idevice::{heartbeat::HeartbeatClient, lockdownd::LockdowndClient, Idevice};
-use log::info;
+use log::{info, warn};
 use std::{
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot::{error::TryRecvError, Sender};
 
 use crate::devices::SharedDevices;
 
@@ -15,10 +15,8 @@ pub async fn heartbeat(
     udid: String,
     pairing_file: idevice::pairing_file::PairingFile,
     data: Arc<tokio::sync::Mutex<SharedDevices>>,
-) -> Result<UnboundedSender<()>, Box<dyn std::error::Error>> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let pls_stop = Arc::new(Mutex::new(false));
-    let pls_stop_clone = pls_stop.clone();
+) -> Result<Sender<()>, Box<dyn std::error::Error>> {
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
 
     let socket = SocketAddr::new(ip_addr, LockdowndClient::LOCKDOWND_PORT);
 
@@ -31,8 +29,7 @@ pub async fn heartbeat(
 
     let (port, _) = lockdown_client
         .start_service("com.apple.mobile.heartbeat")
-        .await
-        .unwrap();
+        .await?;
 
     let socket = SocketAddr::new(ip_addr, port);
     let socket = tokio::net::TcpStream::connect(socket).await?;
@@ -41,10 +38,9 @@ pub async fn heartbeat(
 
     idevice.start_session(&pairing_file).await?;
 
-    tokio::spawn(async {
+    tokio::spawn(async move {
         let mut interval = 10;
         let mut heartbeat_client = HeartbeatClient { idevice };
-        let pls_stop = pls_stop;
         loop {
             match heartbeat_client.get_marco(interval + 5).await {
                 Ok(i) => {
@@ -58,8 +54,15 @@ pub async fn heartbeat(
                     break;
                 }
             }
-            if *pls_stop.lock().unwrap() {
-                break;
+            match rx.try_recv() {
+                Ok(_) => {
+                    info!("Heartbeat instructed to die")
+                }
+                Err(TryRecvError::Closed) => {
+                    warn!("Heartbeat killer closed");
+                    break;
+                }
+                _ => {}
             }
             if let Err(e) = heartbeat_client.send_polo().await {
                 info!("Heartbeat send failed: {:?}", e);
@@ -69,10 +72,6 @@ pub async fn heartbeat(
                 return;
             }
         }
-    });
-    tokio::spawn(async move {
-        rx.recv().await;
-        *pls_stop_clone.lock().unwrap() = true;
     });
     Ok(tx)
 }

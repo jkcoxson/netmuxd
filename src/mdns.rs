@@ -110,13 +110,14 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
             }
 
             // Look through paired devices for mac address
-            match mac_addr {
+            let mac_addr = match mac_addr {
                 Some(m) => m,
                 None => {
                     warn!("Unable to get mac address for mDNS record");
                     continue;
                 }
-            }
+            };
+
             let mut lock = data.lock().await;
             if let Ok(udid) = lock.get_udid_from_mac(mac_addr.to_string()).await {
                 if lock.devices.contains_key(&udid) {

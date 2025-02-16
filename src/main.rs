@@ -329,6 +329,7 @@ async fn handle_stream(
                                     0
                                 }
                             };
+                            std::mem::drop(central_data);
 
                             let mut p = plist::Dictionary::new();
                             p.insert("Result".into(), res.into());
@@ -370,6 +371,7 @@ async fn handle_stream(
 
                                 device_list.push(plist::Value::Dictionary(to_push));
                             }
+                            std::mem::drop(data);
                             let mut upper = plist::Dictionary::new();
                             upper.insert("DeviceList".into(), plist::Value::Array(device_list));
                             let res = RawPacket::new(upper, 1, 8, parsed.tag);
@@ -426,6 +428,7 @@ async fn handle_stream(
                                     return;
                                 }
                             };
+                            std::mem::drop(lock);
 
                             let mut p = plist::Dictionary::new();
                             p.insert("BUID".into(), buid.into());
@@ -532,6 +535,7 @@ async fn handle_stream(
                                     }
                                 }
                             } else {
+                                std::mem::drop(central_data);
                                 let mut p = plist::Dictionary::new();
                                 p.insert("MessageType".into(), "Result".into());
                                 p.insert("Number".into(), 1.into());

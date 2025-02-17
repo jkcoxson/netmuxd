@@ -1,21 +1,15 @@
 // jkcoxson
 
-use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io::Read, net::IpAddr, path::PathBuf};
 
 use log::{debug, info, trace, warn};
-use tokio::{
-    io::AsyncReadExt,
-    sync::{oneshot::Sender, Mutex},
-};
-
-use crate::heartbeat;
+use tokio::{io::AsyncReadExt, sync::oneshot::Sender};
 
 pub struct SharedDevices {
     pub devices: HashMap<String, MuxerDevice>,
     pub last_index: u64,
     pub last_interface_index: u64,
     plist_storage: String,
-    use_heartbeat: bool,
     known_mac_addresses: HashMap<String, String>,
     paired_udids: Vec<String>,
 }
@@ -39,7 +33,7 @@ pub struct MuxerDevice {
 }
 
 impl SharedDevices {
-    pub async fn new(plist_storage: Option<String>, use_heartbeat: bool) -> Self {
+    pub async fn new(plist_storage: Option<String>) -> Self {
         let plist_storage = if let Some(plist_storage) = plist_storage {
             info!("Plist storage specified, ensure the environment is aware");
             plist_storage
@@ -70,7 +64,6 @@ impl SharedDevices {
             last_index: 0,
             last_interface_index: 0,
             plist_storage,
-            use_heartbeat,
             known_mac_addresses: HashMap::new(),
             paired_udids: Vec::new(),
         }
@@ -81,7 +74,7 @@ impl SharedDevices {
         network_address: IpAddr,
         service_name: String,
         connection_type: String,
-        data: Arc<Mutex<Self>>,
+        heartbeat_handle: Option<Sender<()>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if self.devices.contains_key(&udid) {
             trace!("Device has already been added, skipping");
@@ -89,14 +82,6 @@ impl SharedDevices {
         }
         self.last_index += 1;
         self.last_interface_index += 1;
-        let pairing_file = self.get_pairing_record(udid.clone()).await?;
-        let pairing_file = idevice::pairing_file::PairingFile::from_bytes(&pairing_file)?;
-
-        let handle = if self.use_heartbeat {
-            Some(heartbeat::heartbeat(network_address, udid.clone(), pairing_file, data).await?)
-        } else {
-            None
-        };
 
         let dev = MuxerDevice {
             connection_type,
@@ -105,7 +90,7 @@ impl SharedDevices {
             interface_index: self.last_interface_index,
             network_address: Some(network_address),
             serial_number: udid.clone(),
-            heartbeat_handle: handle,
+            heartbeat_handle,
             connection_speed: None,
             location_id: None,
             product_id: None,
@@ -141,7 +126,7 @@ impl SharedDevices {
             }
         };
     }
-    pub async fn get_pairing_record(&self, udid: String) -> Result<Vec<u8>, std::io::Error> {
+    pub async fn get_pairing_record(&self, udid: &String) -> Result<Vec<u8>, std::io::Error> {
         let path = PathBuf::from(self.plist_storage.clone()).join(format!("{}.plist", udid));
         info!("Attempting to read pairing file: {path:?}");
         if !path.exists() {

@@ -1,10 +1,10 @@
 // jkcoxson
 
-use crate::devices::SharedDevices;
+use crate::{devices::SharedDevices, heartbeat};
+use idevice::pairing_file::PairingFile;
 use log::{info, warn};
 use std::net::IpAddr;
 use std::sync::Arc;
-
 use tokio::sync::Mutex;
 
 #[cfg(not(feature = "zeroconf"))]
@@ -24,7 +24,7 @@ const SERVICE_NAME: &str = "apple-mobdev2";
 const SERVICE_PROTOCOL: &str = "tcp";
 
 #[cfg(feature = "zeroconf")]
-pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
+pub async fn discover(data: Arc<Mutex<SharedDevices>>, use_heartbeat: bool) {
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
     println!("Starting mDNS discovery for {} with zeroconf", service_name);
 
@@ -66,13 +66,42 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                 }
                 println!("Adding device {}", udid);
 
+                let heartbeat_handle = if use_heartbeat {
+                    let pairing_file = match data.lock().await.get_pairing_record(&udid).await {
+                        Ok(p) => match PairingFile::from_bytes(&p) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                log::error!("Failed to parse pair record: {e:?}");
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("Failed to get pairing file for device: {e:?}");
+                            continue;
+                        }
+                    };
+                    let heartbeat_handle =
+                        match heartbeat::heartbeat(addr, udid.clone(), pairing_file, data.clone())
+                            .await
+                        {
+                            Ok(h) => h,
+                            Err(e) => {
+                                warn!("Failed to start heartbeat: {e:?}");
+                                return;
+                            }
+                        };
+                    Some(heartbeat_handle)
+                } else {
+                    None
+                };
+
                 if let Err(e) = lock
                     .add_network_device(
                         udid.clone(),
                         addr,
                         service_name.clone(),
                         "Network".to_string(),
-                        data.clone(),
+                        heartbeat_handle,
                     )
                     .await
                 {
@@ -84,7 +113,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
 }
 
 #[cfg(not(feature = "zeroconf"))]
-pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
+pub async fn discover(data: Arc<Mutex<SharedDevices>>, use_heartbeat: bool) {
     use log::warn;
 
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
@@ -125,6 +154,34 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                     continue;
                 }
                 println!("Adding device {}", udid);
+                let heartbeat_handle = if use_heartbeat {
+                    let pairing_file = match data.lock().await.get_pairing_record(&udid).await {
+                        Ok(p) => match PairingFile::from_bytes(&p) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                log::error!("Failed to parse pair record: {e:?}");
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("Failed to get pairing file for device: {e:?}");
+                            continue;
+                        }
+                    };
+                    let heartbeat_handle =
+                        match heartbeat::heartbeat(addr, udid.clone(), pairing_file, data.clone())
+                            .await
+                        {
+                            Ok(h) => h,
+                            Err(e) => {
+                                warn!("Failed to start heartbeat: {e:?}");
+                                return;
+                            }
+                        };
+                    Some(heartbeat_handle)
+                } else {
+                    None
+                };
 
                 if let Err(e) = lock
                     .add_network_device(
@@ -132,7 +189,7 @@ pub async fn discover(data: Arc<Mutex<SharedDevices>>) {
                         addr,
                         service_name.clone(),
                         "Network".to_string(),
-                        data.clone(),
+                        heartbeat_handle,
                     )
                     .await
                 {

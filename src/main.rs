@@ -6,6 +6,7 @@ use std::{fs, os::unix::prelude::PermissionsExt};
 
 use crate::raw_packet::RawPacket;
 use devices::SharedDevices;
+use idevice::pairing_file::PairingFile;
 use log::{debug, error, info, trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -110,9 +111,7 @@ async fn main() {
     }
     info!("Collected arguments, proceeding");
 
-    let data = Arc::new(Mutex::new(
-        devices::SharedDevices::new(plist_storage, use_heartbeat).await,
-    ));
+    let data = Arc::new(Mutex::new(devices::SharedDevices::new(plist_storage).await));
     info!("Created new central data");
     let data_clone = data.clone();
 
@@ -137,7 +136,7 @@ async fn main() {
                     }
                 };
 
-                handle_stream(socket, data.clone()).await;
+                handle_stream(socket, data.clone(), use_heartbeat).await;
             }
         });
     }
@@ -168,7 +167,7 @@ async fn main() {
                     }
                 };
 
-                handle_stream(socket, data.clone()).await;
+                handle_stream(socket, data.clone(), use_heartbeat).await;
             }
         });
     }
@@ -176,7 +175,7 @@ async fn main() {
     if use_mdns {
         let local = tokio::task::LocalSet::new();
         local.spawn_local(async move {
-            mdns::discover(data_clone).await;
+            mdns::discover(data_clone, use_heartbeat).await;
             error!("mDNS discovery stopped, how the heck did you break this");
         });
         local.await;
@@ -197,6 +196,7 @@ enum Directions {
 async fn handle_stream(
     mut socket: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     data: Arc<Mutex<SharedDevices>>,
+    use_heartbeat: bool,
 ) {
     tokio::spawn(async move {
         let mut current_directions = Directions::None;
@@ -297,6 +297,14 @@ async fn handle_stream(
                                 }
                             };
 
+                            let ip_address = match ip_address.parse() {
+                                Ok(i) => i,
+                                Err(_) => {
+                                    warn!("Bad IP requested: {ip_address}");
+                                    return;
+                                }
+                            };
+
                             let udid = match parsed.plist.get("DeviceID") {
                                 Some(plist::Value::String(u)) => u,
                                 _ => {
@@ -305,21 +313,50 @@ async fn handle_stream(
                                 }
                             };
 
-                            let mut central_data = data.lock().await;
-                            let ip_address = match ip_address.parse() {
-                                Ok(i) => i,
-                                Err(_) => {
-                                    warn!("Bad IP requested: {ip_address}");
-                                    return;
-                                }
+                            let heartbeat_handle = if use_heartbeat {
+                                let pairing_file =
+                                    match data.lock().await.get_pairing_record(udid).await {
+                                        Ok(p) => match PairingFile::from_bytes(&p) {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                log::error!("Failed to parse pair record: {e:?}");
+                                                return;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            log::error!(
+                                                "Failed to get pairing file for device: {e:?}"
+                                            );
+                                            return;
+                                        }
+                                    };
+                                let heartbeat_handle = match heartbeat::heartbeat(
+                                    ip_address,
+                                    udid.clone(),
+                                    pairing_file,
+                                    data.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(h) => h,
+                                    Err(e) => {
+                                        warn!("Failed to start heartbeat: {e:?}");
+                                        return;
+                                    }
+                                };
+                                Some(heartbeat_handle)
+                            } else {
+                                None
                             };
+
+                            let mut central_data = data.lock().await;
                             let res = match central_data
                                 .add_network_device(
                                     udid.to_owned(),
                                     ip_address,
                                     service_name.to_owned(),
                                     connection_type.to_owned(),
-                                    data.clone(),
+                                    heartbeat_handle,
                                 )
                                 .await
                             {
@@ -391,7 +428,7 @@ async fn handle_stream(
                             let lock = data.lock().await;
                             let pair_file = match lock
                                 .get_pairing_record(match parsed.plist.get("PairRecordID") {
-                                    Some(plist::Value::String(p)) => p.to_owned(),
+                                    Some(plist::Value::String(p)) => p,
                                     _ => {
                                         warn!("Request did not contain PairRecordID");
                                         return;

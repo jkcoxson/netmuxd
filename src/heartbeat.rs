@@ -1,6 +1,6 @@
 // jkcoxson
 
-use idevice::{heartbeat::HeartbeatClient, lockdownd::LockdowndClient, Idevice};
+use idevice::{heartbeat::HeartbeatClient, lockdown::LockdownClient, Idevice};
 use log::{info, warn};
 use std::{
     net::{IpAddr, SocketAddr},
@@ -18,13 +18,13 @@ pub async fn heartbeat(
 ) -> Result<Sender<()>, Box<dyn std::error::Error>> {
     let (tx, mut rx) = tokio::sync::oneshot::channel();
 
-    let socket = SocketAddr::new(ip_addr, LockdowndClient::LOCKDOWND_PORT);
+    let socket = SocketAddr::new(ip_addr, LockdownClient::LOCKDOWND_PORT);
 
     let socket = tokio::net::TcpStream::connect(socket).await?;
     let socket = Box::new(socket);
     let idevice = Idevice::new(socket, "netmuxd");
 
-    let mut lockdown_client = LockdowndClient { idevice };
+    let mut lockdown_client = LockdownClient { idevice };
     lockdown_client.start_session(&pairing_file).await?;
 
     let (port, _) = lockdown_client

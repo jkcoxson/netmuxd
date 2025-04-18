@@ -22,7 +22,7 @@ futures-util = { version = "0.3.21" }
 zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
 mdns = "3.0.0"
 
-idevice = { version = "0.1.21", features = ["usbmuxd", "heartbeat"] }
+idevice = { version = "0.1.29", features = ["usbmuxd", "heartbeat"] }
 plist = "1.7"
 
 log = { version = "0.4.16" }

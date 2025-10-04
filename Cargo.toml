@@ -16,22 +16,17 @@ name = "add_device"
 path = "src/add_device.rs"
 
 [dependencies]
-tokio = { version = "1.17.0", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 futures-util = { version = "0.3.21" }
+crossfire = { version = "2.1", features = ["tokio"] }
 
 zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
 mdns = "3.0.0"
 
-idevice = { version = "0.1.29", features = ["usbmuxd", "heartbeat"] }
-plist = "1.7"
+idevice = { path = "../idevice/idevice", features = ["usbmuxd", "heartbeat"] }
+plist = "1.8"
 
 log = { version = "0.4.16" }
 env_logger = { version = "0.11" }
-colored = { version = "2.0.0" }
+colored = { version = "3.0.0" }
 uuid = { version = "1.11", features = ["v4"] }
-
-rusb = { version = "0.9.1", optional = true }
-libusb1-sys = { version = "0.7", optional = true }
-
-[features]
-usb = ["libusb1-sys", "rusb"]

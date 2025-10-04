@@ -1,21 +1,27 @@
-// jkcoxson
+// Jackson Coxson
 
-use std::sync::Arc;
 #[cfg(unix)]
 use std::{fs, os::unix::prelude::PermissionsExt};
+use std::{net::IpAddr, str::FromStr};
 
-use crate::raw_packet::RawPacket;
-use devices::SharedDevices;
-use idevice::pairing_file::PairingFile;
+use crate::{
+    config::NetmuxdConfig,
+    manager::{new_manager_thread, ManagerRequest, ManagerSender},
+    pairing_file::PairingFileFinder,
+    raw_packet::RawPacket,
+};
 use log::{debug, error, info, trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::Mutex,
+    sync::oneshot::channel,
 };
 
+mod config;
 mod devices;
 mod heartbeat;
+mod manager;
 mod mdns;
+mod pairing_file;
 mod raw_packet;
 
 #[tokio::main]
@@ -25,106 +31,21 @@ async fn main() {
     env_logger::init();
     info!("Logger initialized");
 
-    let mut port = 27015;
-    #[cfg(unix)]
-    let mut host = None;
-    #[cfg(windows)]
-    let mut host = Some("localhost".to_string());
-    let mut plist_storage = None;
-    let mut use_heartbeat = true;
-
-    #[cfg(unix)]
-    let mut use_unix = true;
-
-    let mut use_mdns = true;
-
-    // Loop through args
-    let mut i = 0;
-    while i < std::env::args().len() {
-        match std::env::args().nth(i).unwrap().as_str() {
-            "-p" | "--port" => {
-                port = std::env::args()
-                    .nth(i + 1)
-                    .expect("port flag passed without number")
-                    .parse::<i32>()
-                    .expect("port isn't a number");
-                i += 2;
-            }
-            "--host" => {
-                host = Some(
-                    std::env::args()
-                        .nth(i + 1)
-                        .expect("host flag passed without host")
-                        .to_string(),
-                );
-                i += 2;
-            }
-            "--plist-storage" => {
-                plist_storage = Some(
-                    std::env::args()
-                        .nth(i + 1)
-                        .expect("flag passed without value"),
-                );
-                i += 1;
-            }
-            #[cfg(unix)]
-            "--disable-unix" => {
-                use_unix = false;
-                i += 1;
-            }
-            "--disable-mdns" => {
-                use_mdns = false;
-                i += 1;
-            }
-            "--disable-heartbeat" => {
-                use_heartbeat = false;
-                i += 1;
-            }
-            "-h" | "--help" => {
-                println!("netmuxd - a network multiplexer");
-                println!("Usage:");
-                println!("  netmuxd [options]");
-                println!("Options:");
-                println!("  -p, --port <port>");
-                println!("  --host <host>");
-                println!("  --plist-storage <path>");
-                println!("  --disable-heartbeat");
-                #[cfg(unix)]
-                println!("  --disable-unix");
-                println!("  --disable-mdns");
-                #[cfg(feature = "usb")]
-                println!("  --enable-usb  (unusable for now)");
-                println!("  -h, --help");
-                println!("  --about");
-                println!("\n\nSet RUST_LOG to info, debug, warn, error, or trace to see more logs. Default is error.");
-                std::process::exit(0);
-            }
-            "--about" => {
-                println!("netmuxd - a network multiplexer");
-                println!("Copyright (c) 2020 Jackson Coxson");
-                println!("Licensed under the MIT License");
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
+    let config = NetmuxdConfig::collect();
     info!("Collected arguments, proceeding");
 
-    let data = Arc::new(Mutex::new(devices::SharedDevices::new(plist_storage).await));
-    info!("Created new central data");
-    let data_clone = data.clone();
+    let manager_sender = new_manager_thread(&config);
 
-    if let Some(host) = host.clone() {
-        let tcp_data = data.clone();
+    if let Some(host) = config.host.clone() {
+        let manager_sender = manager_sender.clone();
+        let pairing_file_finder = PairingFileFinder::new(&config);
         tokio::spawn(async move {
-            let data = tcp_data;
             // Create TcpListener
-            let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+            let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, config.port))
                 .await
                 .expect("Unable to bind to TCP listener");
 
-            println!("Listening on {}:{}", host, port);
+            println!("Listening on {}:{}", host, config.port);
             #[cfg(unix)]
             println!("WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well");
             loop {
@@ -136,13 +57,15 @@ async fn main() {
                     }
                 };
 
-                handle_stream(socket, data.clone(), use_heartbeat).await;
+                handle_stream(socket, manager_sender.clone(), pairing_file_finder.clone()).await;
             }
         });
     }
 
     #[cfg(unix)]
-    if use_unix {
+    if config.use_unix {
+        let manager_sender = manager_sender.clone();
+        let pairing_file_finder = PairingFileFinder::new(&config);
         tokio::spawn(async move {
             // Delete old Unix socket
             info!("Deleting old Unix socket");
@@ -167,15 +90,16 @@ async fn main() {
                     }
                 };
 
-                handle_stream(socket, data.clone(), use_heartbeat).await;
+                handle_stream(socket, manager_sender.clone(), pairing_file_finder.clone()).await;
             }
         });
     }
 
-    if use_mdns {
+    if config.use_mdns {
         let local = tokio::task::LocalSet::new();
+        let manager_sender = manager_sender.clone();
         local.spawn_local(async move {
-            mdns::discover(data_clone, use_heartbeat).await;
+            mdns::discover(manager_sender.clone(), config).await;
             error!("mDNS discovery stopped, how the heck did you break this");
         });
         local.await;
@@ -195,8 +119,8 @@ enum Directions {
 
 async fn handle_stream(
     mut socket: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    data: Arc<Mutex<SharedDevices>>,
-    use_heartbeat: bool,
+    manager_sender: ManagerSender,
+    pairing_file_finder: PairingFileFinder,
 ) {
     tokio::spawn(async move {
         let mut current_directions = Directions::None;
@@ -313,64 +237,32 @@ async fn handle_stream(
                                 }
                             };
 
-                            let heartbeat_handle = if use_heartbeat {
-                                let pairing_file =
-                                    match data.lock().await.get_pairing_record(udid).await {
-                                        Ok(p) => match PairingFile::from_bytes(&p) {
-                                            Ok(p) => p,
-                                            Err(e) => {
-                                                log::error!("Failed to parse pair record: {e:?}");
-                                                return;
-                                            }
+                            let (tx, rx) = channel();
+                            if let Err(e) = manager_sender
+                                .send(ManagerRequest {
+                                    request_type:
+                                        manager::ManagerRequestType::DiscoveredNetworkDevice {
+                                            udid: udid.clone(),
+                                            network_address: ip_address,
+                                            service_name: service_name.to_string(),
+                                            connection_type: connection_type.to_string(),
                                         },
-                                        Err(e) => {
-                                            log::error!(
-                                                "Failed to get pairing file for device: {e:?}"
-                                            );
-                                            return;
-                                        }
-                                    };
-                                let heartbeat_handle = match heartbeat::heartbeat(
-                                    ip_address,
-                                    udid.clone(),
-                                    pairing_file,
-                                    data.clone(),
-                                )
-                                .await
-                                {
-                                    Ok(h) => h,
-                                    Err(e) => {
-                                        warn!("Failed to start heartbeat: {e:?}");
-                                        return;
-                                    }
-                                };
-                                Some(heartbeat_handle)
-                            } else {
-                                None
-                            };
-
-                            let mut central_data = data.lock().await;
-                            let res = match central_data
-                                .add_network_device(
-                                    udid.to_owned(),
-                                    ip_address,
-                                    service_name.to_owned(),
-                                    connection_type.to_owned(),
-                                    heartbeat_handle,
-                                )
+                                    response: Some(tx),
+                                })
                                 .await
                             {
-                                Ok(_) => 1,
+                                log::error!("Failed to send to manager: {e:?}, stopping!");
+                                return;
+                            }
+                            let res = match rx.await {
+                                Ok(r) => r,
                                 Err(e) => {
-                                    error!("Failed to add requested device to muxer: {e:?}");
-                                    0
+                                    log::error!("Failed to recv manager response: {e:?}");
+                                    return;
                                 }
                             };
-                            std::mem::drop(central_data);
 
-                            let mut p = plist::Dictionary::new();
-                            p.insert("Result".into(), res.into());
-                            let res: Vec<u8> = RawPacket::new(p, 1, 8, parsed.tag).into();
+                            let res: Vec<u8> = RawPacket::new(res, 1, 8, parsed.tag).into();
                             if let Err(e) = socket.write_all(&res).await {
                                 warn!("Failed to send back success message: {e:?}");
                             }
@@ -387,31 +279,43 @@ async fn handle_stream(
                                 }
                             };
 
-                            let mut central_data = data.lock().await;
-                            central_data.remove_device(udid);
+                            manager_sender
+                                .send(ManagerRequest {
+                                    request_type: manager::ManagerRequestType::RemoveDevice {
+                                        udid: udid.to_string(),
+                                    },
+                                    response: None,
+                                })
+                                .await
+                                .ok();
+
                             return;
                         }
+
                         //////////////////////////////
                         // usbmuxd protocol packets //
                         //////////////////////////////
                         "ListDevices" => {
-                            let data = data.lock().await;
-                            let mut device_list = Vec::new();
-                            for i in &data.devices {
-                                let mut to_push = plist::Dictionary::new();
-                                to_push.insert("DeviceID".into(), i.1.device_id.into());
-                                to_push.insert("MessageType".into(), "Attached".into());
-                                to_push.insert(
-                                    "Properties".into(),
-                                    plist::Value::Dictionary(i.1.into()),
-                                );
-
-                                device_list.push(plist::Value::Dictionary(to_push));
+                            let (tx, rx) = channel();
+                            if let Err(e) = manager_sender
+                                .send(ManagerRequest {
+                                    request_type: manager::ManagerRequestType::ListDevices,
+                                    response: Some(tx),
+                                })
+                                .await
+                            {
+                                log::error!("Manager channel is closed: {e:?}");
                             }
-                            std::mem::drop(data);
-                            let mut upper = plist::Dictionary::new();
-                            upper.insert("DeviceList".into(), plist::Value::Array(device_list));
-                            let res = RawPacket::new(upper, 1, 8, parsed.tag);
+                            let res = match rx.await {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    log::error!("Did not recv manager response: {e:?}");
+                                    return;
+                                }
+                            };
+                            println!("{}", idevice::pretty_print_dictionary(&res));
+
+                            let res = RawPacket::new(res, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();
                             if let Err(e) = socket.write_all(&res).await {
                                 warn!("Failed to send response to client: {e:}");
@@ -425,8 +329,7 @@ async fn handle_stream(
                             current_directions = Directions::Listen;
                         }
                         "ReadPairRecord" => {
-                            let lock = data.lock().await;
-                            let pair_file = match lock
+                            let pair_file = match pairing_file_finder
                                 .get_pairing_record(match parsed.plist.get("PairRecordID") {
                                     Some(plist::Value::String(p)) => p,
                                     _ => {
@@ -442,7 +345,14 @@ async fn handle_stream(
                                     return;
                                 }
                             };
-                            std::mem::drop(lock);
+
+                            let pair_file = match pair_file.serialize() {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    log::error!("Failed to serialize pair record: {e:?}");
+                                    return;
+                                }
+                            };
 
                             let mut p = plist::Dictionary::new();
                             p.insert("PairRecordData".into(), plist::Value::Data(pair_file));
@@ -457,15 +367,13 @@ async fn handle_stream(
                             continue;
                         }
                         "ReadBUID" => {
-                            let lock = data.lock().await;
-                            let buid = match lock.get_buid().await {
+                            let buid = match pairing_file_finder.get_buid().await {
                                 Ok(b) => b,
                                 Err(e) => {
                                     log::error!("Failed to get buid: {e:?}");
                                     return;
                                 }
                             };
-                            std::mem::drop(lock);
 
                             let mut p = plist::Dictionary::new();
                             p.insert("BUID".into(), buid.into());
@@ -512,16 +420,35 @@ async fn handle_stream(
                             let connection_port = connection_port.to_be();
 
                             info!("Client is establishing connection to port {connection_port}");
-                            let central_data = data.lock().await;
-                            if let Some(device) = central_data.get_device_by_id(device_id) {
-                                let network_address = device.network_address;
-                                let device_id = device.device_id;
-                                std::mem::drop(central_data);
+                            let (tx, rx) = channel();
+                            if let Err(e) = manager_sender
+                                .send(ManagerRequest {
+                                    request_type:
+                                        manager::ManagerRequestType::GetDeviceNetworkAddress {
+                                            id: device_id,
+                                        },
+                                    response: Some(tx),
+                                })
+                                .await
+                            {
+                                log::error!("Manager thread is stopped: {e:?}");
+                                return;
+                            }
 
+                            let res = match rx.await {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    log::error!("Manager thread did not respond: {e:?}");
+                                    return;
+                                }
+                            };
+
+                            if let Some(address) = res.get("address").and_then(|x| x.as_string()) {
                                 info!("Connecting to device {}", device_id);
+                                let network_address = IpAddr::from_str(address);
 
                                 match network_address {
-                                    Some(ip) => {
+                                    Ok(ip) => {
                                         match tokio::net::TcpStream::connect((ip, connection_port))
                                             .await
                                         {
@@ -567,12 +494,12 @@ async fn handle_stream(
                                             }
                                         }
                                     }
-                                    None => {
-                                        unimplemented!()
+                                    Err(e) => {
+                                        warn!("Invalid network address: {e:?}");
+                                        return;
                                     }
                                 }
                             } else {
-                                std::mem::drop(central_data);
                                 let mut p = plist::Dictionary::new();
                                 p.insert("MessageType".into(), "Result".into());
                                 p.insert("Number".into(), 1.into());

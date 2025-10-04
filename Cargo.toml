@@ -1,6 +1,6 @@
 [package]
 name = "netmuxd"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,7 +23,7 @@ crossfire = { version = "2.1", features = ["tokio"] }
 zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
 mdns = "3.0.0"
 
-idevice = { path = "../idevice/idevice", features = ["usbmuxd", "heartbeat"] }
+idevice = { version = "0.1.43", features = ["usbmuxd", "heartbeat"] }
 plist = "1.8"
 
 log = { version = "0.4.16" }

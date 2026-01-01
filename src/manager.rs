@@ -43,6 +43,10 @@ pub enum ManagerRequestType {
     HeartbeatFailed {
         udid: String,
     },
+    OpenSocket {
+        udid: String,
+        kill: Sender<()>,
+    },
 }
 
 impl ManagerRequest {
@@ -82,6 +86,8 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
     let mut devices: HashMap<String, MuxerDevice> = HashMap::new();
     let mut last_index: u64 = 1;
     let mut last_interface_index: u64 = 1;
+    let mut open_sockets: HashMap<String, Vec<Sender<()>>> = HashMap::new();
+
     tokio::task::spawn(async move {
         loop {
             let message = match manager_recv.recv().await {
@@ -188,7 +194,8 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                             response
                                 .send(idevice::plist!(dict {
                                     "found": true,
-                                    "address": device.network_address.unwrap().to_string()
+                                    "address": device.network_address.unwrap().to_string(),
+                                    "udid": device.serial_number.to_string(),
                                 }))
                                 .ok();
                         } else {
@@ -198,6 +205,20 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                 }
                 ManagerRequestType::HeartbeatFailed { udid } => {
                     devices.remove(&udid);
+                    if let Some(l) = open_sockets.remove(&udid) {
+                        for s in l {
+                            let _ = s.send(());
+                        }
+                    }
+                }
+                ManagerRequestType::OpenSocket { udid, kill } => {
+                    match open_sockets.get_mut(&udid) {
+                        Some(l) => l.push(kill),
+                        None => {
+                            let l = vec![kill];
+                            open_sockets.insert(udid, l);
+                        }
+                    };
                 }
             }
         }

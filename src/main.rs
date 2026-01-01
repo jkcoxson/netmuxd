@@ -6,7 +6,7 @@ use std::{net::IpAddr, str::FromStr};
 
 use crate::{
     config::NetmuxdConfig,
-    manager::{new_manager_thread, ManagerRequest, ManagerSender},
+    manager::{ManagerRequest, ManagerSender, new_manager_thread},
     pairing_file::PairingFileFinder,
     raw_packet::RawPacket,
 };
@@ -47,7 +47,9 @@ async fn main() {
 
             println!("Listening on {}:{}", host, config.port);
             #[cfg(unix)]
-            println!("WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well");
+            println!(
+                "WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well"
+            );
             loop {
                 let (socket, _) = match listener.accept().await {
                     Ok(s) => s,
@@ -443,7 +445,9 @@ async fn handle_stream(
                                 }
                             };
 
-                            if let Some(address) = res.get("address").and_then(|x| x.as_string()) {
+                            if let Some(address) = res.get("address").and_then(|x| x.as_string())
+                                && let Some(udid) = res.get("udid").and_then(|x| x.as_string())
+                            {
                                 info!("Connecting to device {}", device_id);
                                 let network_address = IpAddr::from_str(address);
 
@@ -466,18 +470,30 @@ async fn handle_stream(
                                                     return;
                                                 }
 
-                                                if let Err(e) = tokio::io::copy_bidirectional(
-                                                    &mut stream,
-                                                    &mut socket,
-                                                )
-                                                .await
-                                                {
-                                                    info!("Bidirectional stream stopped: {e:?}");
+                                                let (kill, killed) = channel();
+                                                manager_sender
+                                                    .send(ManagerRequest {
+                                                        request_type: manager::ManagerRequestType::OpenSocket { udid: udid.to_string() , kill },
+                                                        response: None,
+                                                    })
+                                                    .await
+                                                    .expect("Manager is dead");
+
+                                                tokio::select! {
+                                                    _ = killed => {
+                                                        info!("Bidirectional stream stopped via heartbeat failure");
+                                                    }
+                                                    e = tokio::io::copy_bidirectional(&mut stream, &mut socket) => {
+                                                        info!("Bidirectional stream stopped: {e:?}");
+
+                                                    }
                                                 }
-                                                continue;
+                                                return;
                                             }
                                             Err(e) => {
-                                                error!("Unable to connect to device {device_id} port {connection_port}: {e:?}");
+                                                error!(
+                                                    "Unable to connect to device {device_id} port {connection_port}: {e:?}"
+                                                );
                                                 let mut p = plist::Dictionary::new();
                                                 p.insert("MessageType".into(), "Result".into());
                                                 p.insert("Number".into(), 1.into());

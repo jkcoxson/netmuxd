@@ -82,13 +82,19 @@ impl NetmuxdConfig {
                     println!("  --disable-mdns");
                     println!("  -h, --help");
                     println!("  --about");
-                    println!("\n\nSet RUST_LOG to info, debug, warn, error, or trace to see more logs. Default is error.");
+                    println!(
+                        "\n\nSet RUST_LOG to info, debug, warn, error, or trace to see more logs. Default is error."
+                    );
                     std::process::exit(0);
                 }
                 "--about" => {
-                    println!("netmuxd - a network multiplexer");
+                    println!(
+                        "netmuxd v{} - a network multiplexer",
+                        env!("CARGO_PKG_VERSION")
+                    );
                     println!("Copyright (c) 2020 Jackson Coxson");
                     println!("Licensed under the MIT License");
+                    std::process::exit(0);
                 }
                 _ => {
                     i += 1;

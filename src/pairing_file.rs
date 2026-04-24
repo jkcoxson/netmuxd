@@ -2,8 +2,12 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use idevice::{pairing_file::PairingFile, IdeviceError};
 use log::{debug, info, trace, warn};
+use sha2::{Sha256, Sha512};
 use tokio::io::AsyncReadExt;
 
 use crate::config::NetmuxdConfig;
@@ -11,7 +15,10 @@ use crate::config::NetmuxdConfig;
 #[derive(Clone, Debug)]
 pub struct PairingFileFinder {
     plist_storage: String,
+    // Legacy MAC-based lookup (iOS < 26.4)
     known_mac_addresses: HashMap<String, String>,
+    // TXT-based lookup
+    host_ids: HashMap<String, Vec<u8>>,
     paired_udids: Vec<String>,
 }
 
@@ -28,6 +35,7 @@ impl PairingFileFinder {
                 .to_string(),
             ),
             known_mac_addresses: HashMap::new(),
+            host_ids: HashMap::new(),
             paired_udids: Vec::new(),
         }
     }
@@ -48,6 +56,61 @@ impl PairingFileFinder {
         }
         trace!("No UDID found after a re-cache");
         Err(())
+    }
+
+    /// iOS 26.4+ lookup: match a Bonjour TXT record against a paired device.
+    ///
+    /// Algorithm (mirrors MobileDevice's `AMDIsTXTRecordForUDID`):
+    ///   K        = HKDF-SHA512(ikm = HostID_utf8, salt = "", info = "", L = 32)
+    ///   expected = HMAC-SHA256(K, identifier)[0..8]
+    ///   match    = any auth_tag whose base64-decoded first 8 bytes equal `expected`.
+    ///
+    /// `identifier` is the raw TXT value (CFData in the original, bytes here).
+    /// `auth_tags` are the raw TXT values for `authTag`, `authTag#0`, `authTag#1`, etc
+    /// base64-encoded 8-byte tags; this function decodes them.
+    pub async fn find_udid_from_txt(
+        &mut self,
+        identifier: &[u8],
+        auth_tags: &[&[u8]],
+    ) -> Option<String> {
+        if auth_tags.is_empty() {
+            return None;
+        }
+        // Decode all tags up front (they're independent of the candidate HostID).
+        let decoded_tags: Vec<[u8; 8]> = auth_tags
+            .iter()
+            .filter_map(|t| decode_auth_tag(t))
+            .collect();
+        if decoded_tags.is_empty() {
+            debug!("TXT record had authTag(s) but none decoded to 8 bytes");
+            return None;
+        }
+
+        if let Some(udid) = self.match_txt(identifier, &decoded_tags) {
+            return Some(udid);
+        }
+        trace!("No UDID matched TXT record in cache, re-caching...");
+        self.update_cache().await;
+        self.match_txt(identifier, &decoded_tags)
+    }
+
+    fn match_txt(&self, identifier: &[u8], decoded_tags: &[[u8; 8]]) -> Option<String> {
+        for (udid, host_id) in &self.host_ids {
+            let hk = Hkdf::<Sha512>::new(None, host_id);
+            let mut key = [0u8; 32];
+            if hk.expand(&[], &mut key).is_err() {
+                continue;
+            }
+            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key).ok()?;
+            mac.update(identifier);
+            let tag = mac.finalize().into_bytes();
+            let expected = &tag[..8];
+            if decoded_tags.iter().any(|d| d == expected) {
+                info!("TXT record matched UDID {}", udid);
+                return Some(udid.clone());
+            }
+        }
+        None
     }
 
     pub async fn update_cache(&mut self) {
@@ -86,15 +149,8 @@ impl PairingFileFinder {
                         continue;
                     }
                 };
-                let mac_addr = match plist.get("WiFiMACAddress") {
-                    Some(plist::Value::String(m)) => m,
-                    _ => {
-                        debug!("Could not get string value of WiFiMACAddress");
-                        continue;
-                    }
-                };
                 let udid = match plist.get("UDID") {
-                    Some(plist::Value::String(u)) => Some(u),
+                    Some(plist::Value::String(u)) => Some(u.clone()),
                     _ => {
                         debug!("Plist did not contain UDID");
                         None
@@ -102,7 +158,7 @@ impl PairingFileFinder {
                 };
 
                 let udid = if let Some(udid) = udid {
-                    udid.to_owned()
+                    udid
                 } else {
                     debug!("Using the file name as the UDID");
                     match path.file_name() {
@@ -121,15 +177,24 @@ impl PairingFileFinder {
                 };
 
                 let stem = match path.file_stem() {
-                    Some(s) => s,
+                    Some(s) => s.to_string_lossy().to_string(),
                     None => {
                         warn!("Failed to get file stem for entry");
                         continue;
                     }
                 };
 
-                self.known_mac_addresses
-                    .insert(mac_addr.to_owned(), stem.to_string_lossy().to_string());
+                // Legacy: index by WiFiMACAddress if present (iOS < 26.4 devices).
+                if let Some(plist::Value::String(mac)) = plist.get("WiFiMACAddress") {
+                    self.known_mac_addresses.insert(mac.clone(), stem.clone());
+                }
+
+                // iOS 26.4+: index by HostID for TXT-based matching.
+                if let Some(plist::Value::String(host_id)) = plist.get("HostID") {
+                    self.host_ids.insert(stem.clone(), host_id.as_bytes().to_vec());
+                } else {
+                    debug!("Plist {stem:?} has no HostID; TXT-based lookup will skip it");
+                }
                 if self.paired_udids.contains(&udid) {
                     trace!("Cache already contained this UDID");
                     continue;
@@ -197,4 +262,27 @@ impl PairingFileFinder {
             )),
         }
     }
+}
+
+/// Decode an `authTag` TXT value to its 8-byte form.
+///
+/// Bonjour TXT values are raw bytes; the `authTag` entries carry base64-encoded
+/// 8-byte HMAC truncations. MobileDevice trims ASCII whitespace before decoding
+/// (see `_EVP_DecodeBlock` site in `AMDIsTXTRecordForUDID`). Anything that
+/// doesn't decode to exactly 8 bytes is rejected.
+fn decode_auth_tag(raw: &[u8]) -> Option<[u8; 8]> {
+    let trimmed = raw
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|start| {
+            let end = raw
+                .iter()
+                .rposition(|b| !b.is_ascii_whitespace())
+                .map(|i| i + 1)
+                .unwrap_or(raw.len());
+            &raw[start..end]
+        })
+        .unwrap_or(&[][..]);
+    let decoded = B64.decode(trimmed).ok()?;
+    decoded.as_slice().try_into().ok()
 }

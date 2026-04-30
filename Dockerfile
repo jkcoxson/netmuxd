@@ -1,4 +1,8 @@
 FROM rust:1-bookworm AS builder
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cmake \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /work
 COPY . .
 RUN cargo build --release --bin netmuxd

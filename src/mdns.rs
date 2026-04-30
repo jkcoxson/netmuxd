@@ -3,147 +3,126 @@
 use crate::manager::ManagerRequest;
 use crate::pairing_file::PairingFileFinder;
 use crate::{config::NetmuxdConfig, manager::ManagerSender};
-use log::debug;
+use log::{debug, warn};
+use mdns_sd::{ServiceDaemon, ServiceEvent};
 use std::net::IpAddr;
-
-#[cfg(not(feature = "zeroconf"))]
-use {
-    futures_util::{pin_mut, stream::StreamExt},
-    mdns::{Record, RecordKind},
-    std::time::Duration,
-};
-
-#[cfg(feature = "zeroconf")]
-use {
-    zeroconf::prelude::*,
-    zeroconf::{MdnsBrowser, ServiceType},
-};
 
 const SERVICE_NAME: &str = "apple-mobdev2";
 const SERVICE_PROTOCOL: &str = "tcp";
 
-#[cfg(feature = "zeroconf")]
 pub async fn discover(sender: ManagerSender, config: NetmuxdConfig) {
+    // mdns-sd expects the fully-qualified service type with a trailing '.';
+    // downstream consumers expect the form without it.
+    let browse_type = format!("_{}._{}.local.", SERVICE_NAME, SERVICE_PROTOCOL);
     let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
-    log::info!("Starting mDNS discovery for {} with zeroconf", service_name);
+    log::info!("Starting mDNS discovery for {browse_type} with mdns-sd");
 
-    let mut browser = MdnsBrowser::new(
-        ServiceType::new(SERVICE_NAME, SERVICE_PROTOCOL).expect("Unable to start mDNS browse"),
-    );
+    let daemon = match ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("Failed to create mDNS daemon: {e}");
+            return;
+        }
+    };
+    let receiver = match daemon.browse(&browse_type) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to start mDNS browse: {e}");
+            return;
+        }
+    };
 
     let mut pairing_file_finder = PairingFileFinder::new(&config);
-    loop {
-        let result = browser.browse_async().await;
 
-        if let Ok(service) = result {
-            debug!("Service discovered: {:?}", service);
-            let name = service.name();
-            if !name.contains("@") {
+    while let Ok(event) = receiver.recv_async().await {
+        let resolved = match event {
+            ServiceEvent::ServiceResolved(info) => info,
+            _ => continue,
+        };
+        debug!(
+            "Resolved service: fullname={} addrs={:?}",
+            resolved.fullname, resolved.addresses
+        );
+
+        let addr = match pick_address(&resolved) {
+            Some(a) => a,
+            None => {
+                warn!(
+                    "Resolved mDNS service has no usable address: {}",
+                    resolved.fullname
+                );
                 continue;
             }
-            let addr = match service.address() {
-                addr if addr.contains(":") => IpAddr::V6(match addr.parse() {
-                    Ok(i) => i,
-                    Err(e) => {
-                        log::error!("Unable to parse IPv6 address: {e:?}");
-                        continue;
-                    }
-                }),
-                addr => IpAddr::V4(match addr.parse() {
-                    Ok(i) => i,
-                    Err(e) => {
-                        log::error!("Unable to parse IPv4 address: {e:?}");
-                        continue;
-                    }
-                }),
-            };
+        };
 
-            let mac_addr = name.split("@").collect::<Vec<&str>>()[0];
-            if let Ok(udid) = pairing_file_finder
+        // iOS 26.4+: match by Bonjour TXT record (identifier + authTag HMACs).
+        let identifier = resolved
+            .get_property_val("identifier")
+            .and_then(|v| v)
+            .map(|b| b.to_vec());
+        let auth_tags: Vec<Vec<u8>> = resolved
+            .get_properties()
+            .iter()
+            .filter(|p| {
+                let k = p.key();
+                k == "authTag" || k.starts_with("authTag#")
+            })
+            .filter_map(|p| p.val().map(|b| b.to_vec()))
+            .collect();
+
+        let mut udid: Option<String> = None;
+        if let Some(ident) = &identifier
+            && !auth_tags.is_empty()
+        {
+            let refs: Vec<&[u8]> = auth_tags.iter().map(|v| v.as_slice()).collect();
+            udid = pairing_file_finder.find_udid_from_txt(ident, &refs).await;
+        }
+
+        // iOS < 26.4 fallback: parse MAC out of the instance name (`<MAC>@<id>.…`).
+        if udid.is_none()
+            && let Some((mac_addr, _)) = resolved.fullname.split_once('@')
+            && let Ok(u) = pairing_file_finder
                 .get_udid_from_mac(mac_addr.to_string())
                 .await
-            {
-                if sender
-                    .send(ManagerRequest::discovered_device(
-                        udid.clone(),
-                        addr,
-                        service_name.clone(),
-                        "Network".to_string(),
-                    ))
-                    .await
-                    .is_err()
-                {
-                    debug!("Failed to send discovered device to manager, closing");
-                    break;
-                }
+        {
+            udid = Some(u);
+        }
+
+        let udid = match udid {
+            Some(u) => u,
+            None => {
+                debug!(
+                    "No paired device matched service {} (identifier={}, authTags={})",
+                    resolved.fullname,
+                    identifier.is_some(),
+                    auth_tags.len()
+                );
+                continue;
             }
+        };
+
+        if sender
+            .send(ManagerRequest::discovered_device(
+                udid,
+                addr,
+                service_name.clone(),
+                "Network".to_string(),
+            ))
+            .await
+            .is_err()
+        {
+            debug!("Failed to send discovered device to manager, closing");
+            break;
         }
     }
 }
 
-#[cfg(not(feature = "zeroconf"))]
-pub async fn discover(sender: ManagerSender, config: NetmuxdConfig) {
-    use log::warn;
-
-    let service_name = format!("_{}._{}.local", SERVICE_NAME, SERVICE_PROTOCOL);
-    println!("Starting mDNS discovery for {} with mdns", service_name);
-
-    let stream = mdns::discover::all(&service_name, Duration::from_secs(5))
-        .expect("Unable to start mDNS discover stream")
-        .listen();
-    pin_mut!(stream);
-
-    let mut pairing_file_finder = PairingFileFinder::new(&config);
-    while let Some(Ok(response)) = stream.next().await {
-        let addr = response.records().filter_map(self::to_ip_addr).next();
-
-        if let Some(mut addr) = addr {
-            let mut mac_addr = None;
-            for i in response.records() {
-                if let RecordKind::A(addr4) = i.kind {
-                    addr = std::net::IpAddr::V4(addr4)
-                }
-                if i.name.contains(&service_name) && i.name.contains('@') {
-                    mac_addr = Some(i.name.split('@').collect::<Vec<&str>>()[0]);
-                }
-            }
-
-            // Look through paired devices for mac address
-            let mac_addr = match mac_addr {
-                Some(m) => m,
-                None => {
-                    warn!("Unable to get mac address for mDNS record");
-                    continue;
-                }
-            };
-
-            if let Ok(udid) = pairing_file_finder
-                .get_udid_from_mac(mac_addr.to_string())
-                .await
-            {
-                if sender
-                    .send(ManagerRequest::discovered_device(
-                        udid.clone(),
-                        addr,
-                        service_name.clone(),
-                        "Network".to_string(),
-                    ))
-                    .await
-                    .is_err()
-                {
-                    debug!("Failed to send discovered device to manager, closing");
-                    break;
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(feature = "zeroconf"))]
-fn to_ip_addr(record: &Record) -> Option<IpAddr> {
-    match record.kind {
-        RecordKind::A(addr) => Some(addr.into()),
-        RecordKind::AAAA(addr) => Some(addr.into()),
-        _ => None,
-    }
+fn pick_address(resolved: &mdns_sd::ResolvedService) -> Option<IpAddr> {
+    // Prefer IPv4 to preserve the existing behaviour; fall back to any address.
+    resolved
+        .addresses
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| resolved.addresses.iter().next())
+        .map(|a| a.to_ip_addr())
 }

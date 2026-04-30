@@ -20,11 +20,15 @@ tokio = { version = "1", features = ["full"] }
 futures-util = { version = "0.3.21" }
 crossfire = { version = "2.1", features = ["tokio"] }
 
-zeroconf = { git = "https://github.com/zeyugao/zeroconf-rs", optional = true }
-mdns = "3.0.0"
+mdns-sd = "0.19"
 
 idevice = { version = "0.1.43", features = ["usbmuxd", "heartbeat"] }
 plist = "1.8"
+
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
 
 log = { version = "0.4.16" }
 env_logger = { version = "0.11" }

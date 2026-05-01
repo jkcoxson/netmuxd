@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(not(target_os = "windows"))]
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -15,7 +16,9 @@ use log::{debug, info, trace, warn};
 use nusb::DeviceId;
 use nusb::descriptors::TransferType;
 use nusb::hotplug::HotplugEvent;
-use nusb::transfer::{Bulk, ControlIn, ControlType, Direction, In, Out, Recipient};
+use nusb::transfer::{Bulk, Direction, In, Out};
+#[cfg(not(target_os = "windows"))]
+use nusb::transfer::{ControlIn, ControlType, Recipient};
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
@@ -130,7 +133,7 @@ async fn handle_connected(
 ) {
     let id = info.id();
     let serial = info.serial_number().map(|s| s.to_string());
-    let location_id = info.location_id() as u64;
+    let location_id = device_location_id(&info);
     let product_id = info.product_id() as u64;
     let speed = speed_to_bps(info.speed());
 
@@ -156,34 +159,43 @@ async fn handle_connected(
         Some(t) => t,
         None => {
             // Device is in a mode (e.g. mode 5 / NCM Direct on
-            // iOS 17+) where the mux interface isn't exposed. Send
-            // the vendor SET_MODE control transfer to switch into
-            // mode 3 (mux + NCM, iOS 10.3+). Mode 3 triggers a USB
-            // reconnect, so we drop this handle and let hotplug
-            // re-fire the Connected event with the new configs.
-            info!(
-                "No usbmux interface on {serial:?}; switching to mode {TARGET_MODE} via SET_MODE",
-            );
-            match device
-                .control_in(
-                    ControlIn {
-                        control_type: ControlType::Vendor,
-                        recipient: Recipient::Device,
-                        request: APPLE_VEND_SET_MODE,
-                        value: 0,
-                        index: TARGET_MODE,
-                        length: 1,
-                    },
-                    Duration::from_secs(2),
-                )
-                .await
+            // iOS 17+) where the mux interface isn't exposed.
+            // On non-Windows hosts we send the vendor SET_MODE
+            // control transfer to switch into mode 3 (mux + NCM,
+            // iOS 10.3+); mode 3 triggers a USB reconnect, so we
+            // drop this handle and let hotplug re-fire the
+            // Connected event with the new configs.
+            #[cfg(not(target_os = "windows"))]
             {
-                Ok(resp) => {
-                    debug!("SET_MODE {TARGET_MODE} on {serial:?} returned {:?}", resp);
+                info!(
+                    "No usbmux interface on {serial:?}; switching to mode {TARGET_MODE} via SET_MODE",
+                );
+                match device
+                    .control_in(
+                        ControlIn {
+                            control_type: ControlType::Vendor,
+                            recipient: Recipient::Device,
+                            request: APPLE_VEND_SET_MODE,
+                            value: 0,
+                            index: TARGET_MODE,
+                            length: 1,
+                        },
+                        Duration::from_secs(2),
+                    )
+                    .await
+                {
+                    Ok(resp) => {
+                        debug!("SET_MODE {TARGET_MODE} on {serial:?} returned {:?}", resp);
+                    }
+                    Err(e) => {
+                        debug!("SET_MODE {TARGET_MODE} on {serial:?} errored: {e:?}");
+                    }
                 }
-                Err(e) => {
-                    debug!("SET_MODE {TARGET_MODE} on {serial:?} errored: {e:?}");
-                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                // TODO: idk find a way to do this
+                warn!("Windows is dumb and we can't switch the device mode. You're SoL");
             }
             return;
         }
@@ -499,6 +511,26 @@ async fn resolve_paired_udid(finder: &PairingFileFinder, raw: &str) -> Option<St
         }
     }
     None
+}
+
+/// Best-effort numeric location identifier for the device, used only
+/// for the LocationID field clients see in `ListDevices`. macOS has a
+/// real IOKit location ID; on other platforms we synthesize a stable
+/// number from the bus + port chain so each plug-in gets a distinct
+/// value within a single netmuxd run.
+fn device_location_id(info: &nusb::DeviceInfo) -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        info.location_id() as u64
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut acc: u64 = 0;
+        for &b in info.port_chain() {
+            acc = (acc << 4) | (b as u64 & 0xf);
+        }
+        acc
+    }
 }
 
 fn speed_to_bps(speed: Option<nusb::Speed>) -> u64 {

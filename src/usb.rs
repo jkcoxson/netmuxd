@@ -132,7 +132,10 @@ async fn handle_connected(
     known: Arc<Mutex<HashMap<DeviceId, String>>>,
 ) {
     let id = info.id();
-    let serial = info.serial_number().map(|s| s.to_string());
+    let serial = info.serial_number().map(|s| {
+        s.trim_matches(|c: char| c == '\0' || c.is_whitespace())
+            .to_string()
+    });
     let location_id = device_location_id(&info);
     let product_id = info.product_id() as u64;
     let speed = speed_to_bps(info.speed());

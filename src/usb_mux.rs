@@ -11,9 +11,7 @@ use std::collections::HashMap;
 use std::io;
 
 use log::{debug, info, trace, warn};
-use nusb::io::{EndpointRead, EndpointWrite};
-use nusb::transfer::Bulk;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 // v1 frames have only the 8-byte protocol/length header; v2 adds the
@@ -120,13 +118,24 @@ enum ConnState {
 /// Spawn a per-device mux task. Returns a handle for opening
 /// connections, plus a oneshot that fires when the task exits (used
 /// by the manager to drop the device).
-pub fn spawn(
+///
+/// `reader` and `writer` are the device's bulk-in / bulk-out
+/// endpoints, abstracted as `AsyncRead` / `AsyncWrite`. On macOS /
+/// Linux these come from nusb (`EndpointRead<Bulk>` /
+/// `EndpointWrite<Bulk>`); on Windows they'll come from a
+/// libusbK-backed wrapper. The protocol code itself is transport-
+/// agnostic.
+pub fn spawn<R, W>(
     device_id: u64,
     serial: String,
-    reader: EndpointRead<Bulk>,
-    writer: EndpointWrite<Bulk>,
+    reader: R,
+    writer: W,
     on_exit: oneshot::Sender<u64>,
-) -> UsbMuxHandle {
+) -> UsbMuxHandle
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let handle = UsbMuxHandle { cmd: cmd_tx };
 
@@ -142,13 +151,17 @@ pub fn spawn(
     handle
 }
 
-async fn run(
+async fn run<R, W>(
     device_id: u64,
     serial: &str,
-    mut reader: EndpointRead<Bulk>,
-    mut writer: EndpointWrite<Bulk>,
+    mut reader: R,
+    mut writer: W,
     mut cmd_rx: mpsc::Receiver<Command>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    R: AsyncRead + Send + Unpin,
+    W: AsyncWrite + Send + Unpin,
+{
     // The handshake runs in v1 framing (8-byte header, no magic);
     // we transition to v2 once the device acknowledges VERSION.
     let mut state = MuxState::default();
@@ -293,14 +306,17 @@ fn teardown(connections: &mut HashMap<u16, Connection>, sport: u16) {
     }
 }
 
-async fn handle_incoming(
+async fn handle_incoming<W>(
     device_id: u64,
     pkt: &[u8],
     connections: &mut HashMap<u16, Connection>,
-    writer: &mut EndpointWrite<Bulk>,
+    writer: &mut W,
     state: &mut MuxState,
     tx_data: &mpsc::Sender<(u16, Option<Vec<u8>>)>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Send + Unpin,
+{
     let hdr = parse_header(pkt, state.version)?;
     let header_size = mux_header_size(state.version);
 
@@ -493,7 +509,10 @@ fn parse_tcp(buf: &[u8]) -> io::Result<ParsedTcp> {
     })
 }
 
-async fn read_packet(reader: &mut EndpointRead<Bulk>, state: &mut MuxState) -> io::Result<Vec<u8>> {
+async fn read_packet<R>(reader: &mut R, state: &mut MuxState) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Send + Unpin,
+{
     let header_size = mux_header_size(state.version);
     // Read the first 8 bytes (protocol + length)
     let mut head8 = [0u8; V1_HEADER_SIZE];
@@ -519,12 +538,15 @@ async fn read_packet(reader: &mut EndpointRead<Bulk>, state: &mut MuxState) -> i
     Ok(pkt)
 }
 
-async fn send_version(
-    writer: &mut EndpointWrite<Bulk>,
+async fn send_version<W>(
+    writer: &mut W,
     state: &mut MuxState,
     major: u32,
     minor: u32,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Send + Unpin,
+{
     // The initial VERSION exchange happens with state.version == 0, so
     // send_raw will write an 8-byte v1 header.
     let mut payload = [0u8; 12];
@@ -533,13 +555,16 @@ async fn send_version(
     send_raw(writer, state, Proto::Version, &payload, &[], false).await
 }
 
-async fn send_tcp(
-    writer: &mut EndpointWrite<Bulk>,
+async fn send_tcp<W>(
+    writer: &mut W,
     state: &mut MuxState,
     conn: &Connection,
     flags: u8,
     payload: &[u8],
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Send + Unpin,
+{
     let mut hdr = [0u8; TCP_HEADER_SIZE];
     hdr[0..2].copy_from_slice(&conn.sport.to_be_bytes());
     hdr[2..4].copy_from_slice(&conn.dport.to_be_bytes());
@@ -552,14 +577,17 @@ async fn send_tcp(
     send_raw(writer, state, Proto::Tcp, &hdr, payload, false).await
 }
 
-async fn send_raw(
-    writer: &mut EndpointWrite<Bulk>,
+async fn send_raw<W>(
+    writer: &mut W,
     state: &mut MuxState,
     proto: Proto,
     header: &[u8],
     payload: &[u8],
     reset_seq: bool,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    W: AsyncWrite + Send + Unpin,
+{
     let header_size = mux_header_size(state.version);
     let total = header_size + header.len() + payload.len();
     if total > USB_MTU {

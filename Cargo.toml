@@ -21,8 +21,9 @@ futures-util = { version = "0.3.21" }
 crossfire = { version = "2.1", features = ["tokio"] }
 
 mdns-sd = "0.19"
+nusb = { version = "0.2", features = ["tokio"] }
 
-idevice = { version = "0.1.43", features = ["usbmuxd", "heartbeat"] }
+idevice = { version = "0.1.43", features = ["usbmuxd", "heartbeat", "pair"] }
 plist = "1.8"
 
 hkdf = "0.12"

@@ -2,7 +2,6 @@
 
 #[cfg(unix)]
 use std::{fs, os::unix::prelude::PermissionsExt};
-use std::{net::IpAddr, str::FromStr};
 
 use crate::{
     config::NetmuxdConfig,
@@ -10,7 +9,10 @@ use crate::{
     pairing_file::PairingFileFinder,
     raw_packet::RawPacket,
 };
-use log::{debug, error, info, trace, warn};
+
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + ?Sized> AsyncReadWrite for T {}
+use log::{error, info, trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::oneshot::channel,
@@ -23,6 +25,8 @@ mod manager;
 mod mdns;
 mod pairing_file;
 mod raw_packet;
+mod usb;
+mod usb_mux;
 
 #[tokio::main]
 async fn main() {
@@ -97,6 +101,15 @@ async fn main() {
         });
     }
 
+    if config.use_usb {
+        let manager_sender = manager_sender.clone();
+        let config = config.clone();
+        tokio::spawn(async move {
+            usb::discover(manager_sender, config).await;
+            error!("USB discovery stopped");
+        });
+    }
+
     if config.use_mdns {
         let local = tokio::task::LocalSet::new();
         let manager_sender = manager_sender.clone();
@@ -139,7 +152,6 @@ async fn handle_stream(
             };
             trace!("Recv'd {size} bytes");
             if size == 0 {
-                debug!("Received size is zero, closing connection");
                 return;
             }
 
@@ -285,6 +297,7 @@ async fn handle_stream(
                                 .send(ManagerRequest {
                                     request_type: manager::ManagerRequestType::RemoveDevice {
                                         udid: udid.to_string(),
+                                        connection_type: None,
                                     },
                                     response: None,
                                 })
@@ -422,14 +435,15 @@ async fn handle_stream(
                             let connection_port = connection_port.to_be();
 
                             info!("Client is establishing connection to port {connection_port}");
-                            let (tx, rx) = channel();
+                            let (tx, rx) = tokio::sync::oneshot::channel();
                             if let Err(e) = manager_sender
                                 .send(ManagerRequest {
                                     request_type:
-                                        manager::ManagerRequestType::GetDeviceNetworkAddress {
+                                        manager::ManagerRequestType::GetDeviceConnection {
                                             id: device_id,
+                                            response: tx,
                                         },
-                                    response: Some(tx),
+                                    response: None,
                                 })
                                 .await
                             {
@@ -437,97 +451,101 @@ async fn handle_stream(
                                 return;
                             }
 
-                            let res = match rx.await {
-                                Ok(r) => r,
+                            let lookup = match rx.await {
+                                Ok(Some(l)) => l,
+                                Ok(None) => {
+                                    warn!("No device with id {device_id}");
+                                    let mut p = plist::Dictionary::new();
+                                    p.insert("MessageType".into(), "Result".into());
+                                    p.insert("Number".into(), 1.into());
+                                    let res = RawPacket::new(p, 1, 8, parsed.tag);
+                                    let res: Vec<u8> = res.into();
+                                    if let Err(e) = socket.write_all(&res).await {
+                                        warn!("Failed to send response to client: {e:?}");
+                                    }
+                                    continue;
+                                }
                                 Err(e) => {
                                     log::error!("Manager thread did not respond: {e:?}");
                                     return;
                                 }
                             };
 
-                            if let Some(address) = res.get("address").and_then(|x| x.as_string())
-                                && let Some(udid) = res.get("udid").and_then(|x| x.as_string())
-                            {
-                                info!("Connecting to device {}", device_id);
-                                let network_address = IpAddr::from_str(address);
-
-                                match network_address {
-                                    Ok(ip) => {
-                                        match tokio::net::TcpStream::connect((ip, connection_port))
-                                            .await
+                            type Upstream = Box<dyn AsyncReadWrite>;
+                            let upstream: Result<Upstream, String> =
+                                match lookup.connection_type.as_str() {
+                                    "Network" => match lookup.network_address {
+                                        Some(addr) => match tokio::net::TcpStream::connect((
+                                            addr,
+                                            connection_port,
+                                        ))
+                                        .await
                                         {
-                                            Ok(mut stream) => {
-                                                let mut p = plist::Dictionary::new();
-                                                p.insert("MessageType".into(), "Result".into());
-                                                p.insert("Number".into(), 0.into());
+                                            Ok(s) => Ok(Box::new(s) as Upstream),
+                                            Err(e) => Err(format!("tcp connect: {e:?}")),
+                                        },
+                                        None => Err("network device missing address".to_string()),
+                                    },
+                                    "USB" => match lookup.usb {
+                                        Some(handle) => match handle.connect(connection_port).await
+                                        {
+                                            Ok(s) => Ok(Box::new(s) as Upstream),
+                                            Err(e) => Err(format!("usb connect: {e:?}")),
+                                        },
+                                        None => Err("usb device missing handle".into()),
+                                    },
+                                    other => Err(format!("unknown connection type {other}")),
+                                };
 
-                                                let res = RawPacket::new(p, 1, 8, parsed.tag);
-                                                let res: Vec<u8> = res.into();
-                                                if let Err(e) = socket.write_all(&res).await {
-                                                    warn!(
-                                                        "Failed to send response to client: {e:?}"
-                                                    );
-                                                    return;
-                                                }
-
-                                                let (kill, killed) = channel();
-                                                manager_sender
-                                                    .send(ManagerRequest {
-                                                        request_type: manager::ManagerRequestType::OpenSocket { udid: udid.to_string() , kill },
-                                                        response: None,
-                                                    })
-                                                    .await
-                                                    .expect("Manager is dead");
-
-                                                tokio::select! {
-                                                    _ = killed => {
-                                                        info!("Bidirectional stream stopped via heartbeat failure");
-                                                    }
-                                                    e = tokio::io::copy_bidirectional(&mut stream, &mut socket) => {
-                                                        info!("Bidirectional stream stopped: {e:?}");
-
-                                                    }
-                                                }
-                                                return;
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "Unable to connect to device {device_id} port {connection_port}: {e:?}"
-                                                );
-                                                let mut p = plist::Dictionary::new();
-                                                p.insert("MessageType".into(), "Result".into());
-                                                p.insert("Number".into(), 1.into());
-
-                                                let res = RawPacket::new(p, 1, 8, parsed.tag);
-                                                let res: Vec<u8> = res.into();
-                                                if let Err(e) = socket.write_all(&res).await {
-                                                    warn!(
-                                                        "Failed to send response to client: {e:?}"
-                                                    );
-                                                }
-
-                                                continue;
-                                            }
-                                        }
+                            let mut upstream = match upstream {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    error!(
+                                        "Unable to connect to device {device_id} port {connection_port}: {e}"
+                                    );
+                                    let mut p = plist::Dictionary::new();
+                                    p.insert("MessageType".into(), "Result".into());
+                                    p.insert("Number".into(), 1.into());
+                                    let res = RawPacket::new(p, 1, 8, parsed.tag);
+                                    let res: Vec<u8> = res.into();
+                                    if let Err(e) = socket.write_all(&res).await {
+                                        warn!("Failed to send response to client: {e:?}");
                                     }
-                                    Err(e) => {
-                                        warn!("Invalid network address: {e:?}");
-                                        return;
-                                    }
+                                    continue;
                                 }
-                            } else {
-                                let mut p = plist::Dictionary::new();
-                                p.insert("MessageType".into(), "Result".into());
-                                p.insert("Number".into(), 1.into());
+                            };
 
-                                let res = RawPacket::new(p, 1, 8, parsed.tag);
-                                let res: Vec<u8> = res.into();
-                                if let Err(e) = socket.write_all(&res).await {
-                                    warn!("Failed to send response to client: {e:?}");
-                                }
-
-                                continue;
+                            let mut p = plist::Dictionary::new();
+                            p.insert("MessageType".into(), "Result".into());
+                            p.insert("Number".into(), 0.into());
+                            let res = RawPacket::new(p, 1, 8, parsed.tag);
+                            let res: Vec<u8> = res.into();
+                            if let Err(e) = socket.write_all(&res).await {
+                                warn!("Failed to send response to client: {e:?}");
+                                return;
                             }
+
+                            let (kill, killed) = channel();
+                            manager_sender
+                                .send(ManagerRequest {
+                                    request_type: manager::ManagerRequestType::OpenSocket {
+                                        device_id,
+                                        kill,
+                                    },
+                                    response: None,
+                                })
+                                .await
+                                .expect("Manager is dead");
+
+                            tokio::select! {
+                                _ = killed => {
+                                    info!("Bidirectional stream stopped via heartbeat failure");
+                                }
+                                e = tokio::io::copy_bidirectional(&mut *upstream, &mut socket) => {
+                                    info!("Bidirectional stream stopped: {e:?}");
+                                }
+                            }
+                            return;
                         }
                         _ => {
                             warn!("Unknown packet type");

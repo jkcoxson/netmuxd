@@ -8,6 +8,7 @@ pub struct NetmuxdConfig {
     pub use_heartbeat: bool,
     pub use_unix: bool,
     pub use_mdns: bool,
+    pub use_usb: bool,
 }
 
 impl NetmuxdConfig {
@@ -22,6 +23,7 @@ impl NetmuxdConfig {
             use_heartbeat: true,
             use_unix: true,
             use_mdns: true,
+            use_usb: true,
         }
     }
     pub fn collect() -> Self {
@@ -64,6 +66,10 @@ impl NetmuxdConfig {
                     res.use_mdns = false;
                     i += 1;
                 }
+                "--disable-usb" => {
+                    res.use_usb = false;
+                    i += 1;
+                }
                 "--disable-heartbeat" => {
                     res.use_heartbeat = false;
                     i += 1;
@@ -80,6 +86,7 @@ impl NetmuxdConfig {
                     #[cfg(unix)]
                     println!("  --disable-unix");
                     println!("  --disable-mdns");
+                    println!("  --disable-usb");
                     println!("  -h, --help");
                     println!("  --about");
                     println!(

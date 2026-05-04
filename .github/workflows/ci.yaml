@@ -59,16 +59,22 @@ jobs:
           key: vendor-${{ matrix.target }}-${{ hashFiles('vendor-manifest.toml') }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin netmuxd
+      - name: Stage artifacts (Windows)
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/netmuxd.exe" -Destination dist/
+          Copy-Item "vendor/libusbK/dll/${{ matrix.windows_dll_dir }}/libusbK.dll" -Destination dist/
+          Copy-Item "vendor/libusbK/dll/${{ matrix.windows_dll_dir }}/libusb0.dll" -Destination dist/
+      - name: Stage artifacts (non-Windows)
+        if: "!contains(matrix.target, 'windows')"
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/netmuxd dist/
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: netmuxd-${{ matrix.target }}
-          # Include the libusbK runtime DLLs alongside netmuxd.exe on
-          # Windows targets — they're loaded dynamically. The shell
-          # globbing falls through harmlessly for non-Windows targets.
-          path: |
-            target/${{ matrix.target }}/release/netmuxd
-            target/${{ matrix.target }}/release/netmuxd.exe
-            ${{ matrix.windows_dll_dir && format('vendor/libusbK/dll/{0}/libusbK.dll', matrix.windows_dll_dir) || '' }}
-            ${{ matrix.windows_dll_dir && format('vendor/libusbK/dll/{0}/libusb0.dll', matrix.windows_dll_dir) || '' }}
+          path: dist/
           if-no-files-found: error

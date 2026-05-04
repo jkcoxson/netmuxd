@@ -79,7 +79,16 @@ impl NetmuxdConfig {
                 "-h" | "--help" => {
                     println!("netmuxd - a network multiplexer");
                     println!("Usage:");
+                    #[cfg(unix)]
                     println!("  netmuxd [options]");
+                    #[cfg(windows)]
+                    {
+                        println!("  netmuxd [argument] [options]");
+                        println!("Arguments:");
+                        println!("  install (installs the Windows driver)");
+                        println!("  uninstall (uninstalls the Windows driver)");
+                        println!("  export-driver (exports the driver files for signing)");
+                    }
                     println!("Options:");
                     println!("  -p, --port <port>");
                     println!("  --host <host>");

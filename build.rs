@@ -14,11 +14,7 @@
 // fetch entirely and uses the directories directly. Useful when
 // developing libwdi locally.
 //
-// The fetch shells out to PowerShell (`Invoke-WebRequest`,
-// `Get-FileHash`, `Expand-Archive`) so build.rs has zero Rust deps.
-// PowerShell is always present on Windows hosts, including GitHub
-// Actions `windows-latest` runners. Cross-compiling to Windows from a
-// non-Windows host isn't supported here.
+// Cross-compiling to Windows from a non-Windows host isn't supported.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,10 +44,10 @@ fn main() {
 
     // If both override env vars are set we trust the caller's
     // directories and skip the auto-fetch entirely.
-    if libusbk_env.is_none() || libwdi_env.is_none() {
-        if let Err(e) = ensure_vendor(&manifest_dir, &target) {
-            panic!("Failed to set up vendor binaries for {target}: {e}");
-        }
+    if (libusbk_env.is_none() || libwdi_env.is_none())
+        && let Err(e) = ensure_vendor(&manifest_dir, &target)
+    {
+        panic!("Failed to set up vendor binaries for {target}: {e}");
     }
 
     let libusbk_root =
@@ -104,18 +100,9 @@ fn ensure_vendor(manifest_dir: &Path, target: &str) -> Result<(), String> {
     // Download to OUT_DIR so cargo cleans it up automatically.
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let zip_path = out_dir.join(&entry.filename);
-    pwsh(&format!(
-        "$ProgressPreference='SilentlyContinue'; \
-         Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing -MaximumRedirection 10",
-        url,
-        zip_path.display()
-    ))?;
+    download(&url, &zip_path)?;
 
-    let actual_hash = pwsh(&format!(
-        "(Get-FileHash -Path '{}' -Algorithm SHA256).Hash",
-        zip_path.display()
-    ))?;
-    let actual = actual_hash.trim().to_ascii_lowercase();
+    let actual = sha256_hex(&zip_path)?;
     let expected = entry.sha256.to_ascii_lowercase();
     if actual != expected {
         return Err(format!(
@@ -125,34 +112,75 @@ fn ensure_vendor(manifest_dir: &Path, target: &str) -> Result<(), String> {
     }
 
     // Zips have `vendor/...` as their top-level layout, so extract to
-    // the manifest dir (repo root). Expand-Archive merges into existing
+    // the manifest dir (repo root). `tar -xf` merges into existing
     // dirs, so our checked-in headers under vendor/<lib>/include/ stay
     // put.
-    pwsh(&format!(
-        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-        zip_path.display(),
-        manifest_dir.display()
-    ))?;
+    extract_zip(&zip_path, manifest_dir)?;
 
-    std::fs::write(&stamp, "")
-        .map_err(|e| format!("write stamp {}: {e}", stamp.display()))?;
+    std::fs::write(&stamp, "").map_err(|e| format!("write stamp {}: {e}", stamp.display()))?;
     Ok(())
 }
 
-fn pwsh(script: &str) -> Result<String, String> {
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+fn download(url: &str, dest: &Path) -> Result<(), String> {
+    let output = Command::new("curl")
+        .args([
+            "-fL",
+            "-sS",
+            "--retry",
+            "3",
+            "-o",
+            &dest.to_string_lossy(),
+            url,
+        ])
         .output()
-        .map_err(|e| format!("invoke powershell: {e}"))?;
+        .map_err(|e| format!("invoke curl: {e}"))?;
     if !output.status.success() {
         return Err(format!(
-            "powershell exit {}: {}{}",
+            "curl exit {}: {}",
             output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stderr).trim(),
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(())
+}
+
+fn sha256_hex(path: &Path) -> Result<String, String> {
+    let output = Command::new("certutil")
+        .args(["-hashfile", &path.to_string_lossy(), "SHA256"])
+        .output()
+        .map_err(|e| format!("invoke certutil: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "certutil exit {}: {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(trimmed.to_ascii_lowercase());
+        }
+    }
+    Err(format!(
+        "could not find SHA-256 hex line in certutil output:\n{stdout}"
+    ))
+}
+
+fn extract_zip(zip: &Path, dest: &Path) -> Result<(), String> {
+    let output = Command::new("tar")
+        .args(["-xf", &zip.to_string_lossy(), "-C", &dest.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("invoke tar: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "tar exit {}: {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    Ok(())
 }
 
 // --- minimal vendor-manifest.toml parser -------------------------------
@@ -185,19 +213,28 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let mut cur_filename: Option<String> = None;
     let mut cur_sha256: Option<String> = None;
 
-    let flush =
-        |target: &mut Option<String>,
-         filename: &mut Option<String>,
-         sha256: &mut Option<String>,
-         out: &mut Vec<(String, TargetEntry)>|
-         -> Result<(), String> {
-            if let Some(t) = target.take() {
-                let f = filename.take().ok_or_else(|| format!("section [{t}] missing filename"))?;
-                let s = sha256.take().ok_or_else(|| format!("section [{t}] missing sha256"))?;
-                out.push((t, TargetEntry { filename: f, sha256: s }));
-            }
-            Ok(())
-        };
+    let flush = |target: &mut Option<String>,
+                 filename: &mut Option<String>,
+                 sha256: &mut Option<String>,
+                 out: &mut Vec<(String, TargetEntry)>|
+     -> Result<(), String> {
+        if let Some(t) = target.take() {
+            let f = filename
+                .take()
+                .ok_or_else(|| format!("section [{t}] missing filename"))?;
+            let s = sha256
+                .take()
+                .ok_or_else(|| format!("section [{t}] missing sha256"))?;
+            out.push((
+                t,
+                TargetEntry {
+                    filename: f,
+                    sha256: s,
+                },
+            ));
+        }
+        Ok(())
+    };
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -205,7 +242,12 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            flush(&mut current_target, &mut cur_filename, &mut cur_sha256, &mut targets)?;
+            flush(
+                &mut current_target,
+                &mut cur_filename,
+                &mut cur_sha256,
+                &mut targets,
+            )?;
             let inner = &line[1..line.len() - 1];
             // Only [targets."..."] sections are recognized; ignore others.
             if let Some(rest) = inner.strip_prefix("targets.") {
@@ -226,7 +268,12 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
             _ => {}
         }
     }
-    flush(&mut current_target, &mut cur_filename, &mut cur_sha256, &mut targets)?;
+    flush(
+        &mut current_target,
+        &mut cur_filename,
+        &mut cur_sha256,
+        &mut targets,
+    )?;
 
     Ok(Manifest {
         version: version.ok_or_else(|| "manifest missing top-level `version`".to_string())?,

@@ -1,0 +1,40 @@
+# Manifest for netmuxd's prebuilt vendor bundles. Consumed by `build.rs`
+# (or scripts/bootstrap.ps1) on first build to download arch-specific
+# `libusbK` + `libwdi` binaries instead of requiring every contributor
+# to build them from source.
+#
+# Bumping `version` invalidates contributor / CI vendor caches — set it
+# whenever a bundle is rebuilt. The download stamp file is named
+# `vendor/.vendor-stamp-{version}-{target}` so old versions stay around
+# until cleaned up manually.
+
+version = "1.0.0"
+
+# `{version}` and `{filename}` are substituted by build.rs at fetch time.
+# The CDN should serve each filename at this exact URL.
+url_template = "https://jkcoxson.com/cdn/netmuxd/vendor-bundles/{version}/{filename}"
+
+[targets."x86_64-pc-windows-msvc"]
+filename = "netmuxd-vendor-x86_64-pc-windows-msvc.zip"
+sha256   = "be79ff961872ccf3e9d0274ee85c6df568d6c16c7d588879f912166682614660"
+
+[targets."i686-pc-windows-msvc"]
+filename = "netmuxd-vendor-i686-pc-windows-msvc.zip"
+sha256   = "3b0ae87190d75fbf53a8b4ad31009a8b847d93320a16ec1ebaa884c26b82c8bd"
+
+[targets."aarch64-pc-windows-msvc"]
+filename = "netmuxd-vendor-aarch64-pc-windows-msvc.zip"
+sha256   = "8b8f4ed4464d5c58d435ef8f04c9a003f806b56642e7b898df79c758f555b8b0"
+
+# Notes on aarch64 reproducibility:
+# - libusb-win32 / libusb0.sys ARM64 was built from libusb/libusb-win32
+#   master with WDK 10.0.26100. Required edit: silence C4996 deprecation
+#   on ExAllocatePoolWithTag in libusb_driver.c (treated as error by the
+#   WDK toolset). Built unsigned — production deployment to ARM64 needs
+#   Microsoft attestation signing.
+# - libusb0.dll / install-filter.exe ARM64 from same source, v143 toolset.
+# - libusbK ARM64 from mcuee/libusbk master (PR #52 added ARM64 platform
+#   to the .vcxproj files; v143 toolset).
+# - libwdi ARM64 from libwdi master with patches: re-enable OPT_ARM,
+#   add Release|ARM64 to libwdi_static.vcxproj, add Release|ARM64
+#   mappings to libwdi.sln (host tools fall back to Win32/x64).

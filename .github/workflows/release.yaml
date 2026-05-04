@@ -29,6 +29,13 @@ jobs:
             os: ubuntu-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            windows_dll_dir: amd64
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            windows_dll_dir: x86
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            windows_dll_dir: arm64
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -36,6 +43,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # `aws-lc-sys` needs `clang-cl` for the ARM64 cross-compile.
+      # windows-latest ships LLVM at this path but not on PATH.
+      - name: Add LLVM to PATH (Windows ARM64)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
+      - name: Cache vendor bundle
+        if: contains(matrix.target, 'windows')
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/libusbK/lib
+            vendor/libusbK/dll
+            vendor/libwdi/lib
+            vendor/.vendor-stamp-*
+          key: vendor-${{ matrix.target }}-${{ hashFiles('vendor-manifest.toml') }}
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.
@@ -47,6 +70,11 @@ jobs:
           # the matrix because GitHub Actions changed the default architecture
           # of macos-latest since macos-14.
           target: ${{ matrix.target }}
+          # (optional) Bundle the libusbK runtime DLLs into the
+          # release zip on Windows. They're loaded dynamically by
+          # netmuxd.exe and need to be next to it. Empty for non-
+          # Windows targets.
+          include: ${{ matrix.windows_dll_dir && format('vendor/libusbK/dll/{0}/libusbK.dll,vendor/libusbK/dll/{0}/libusb0.dll', matrix.windows_dll_dir) || '' }}
           # (optional) On which platform to distribute the `.tar.gz` file.
           # [default value: unix]
           # [possible values: all, unix, windows, none]

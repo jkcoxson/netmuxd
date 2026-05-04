@@ -6,6 +6,7 @@ pub struct NetmuxdConfig {
     pub host: Option<String>,
     pub plist_storage: Option<String>,
     pub use_heartbeat: bool,
+    #[cfg(unix)]
     pub use_unix: bool,
     pub use_mdns: bool,
     pub use_usb: bool,
@@ -18,9 +19,10 @@ impl NetmuxdConfig {
             #[cfg(unix)]
             host: None,
             #[cfg(not(unix))]
-            host: Some("localhost".to_string()),
+            host: Some("127.0.0.1".to_string()),
             plist_storage: None,
             use_heartbeat: true,
+            #[cfg(unix)]
             use_unix: true,
             use_mdns: true,
             use_usb: true,

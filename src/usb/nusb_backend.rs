@@ -1,39 +1,37 @@
 // Jackson Coxson
 //
-// USB enumeration + hotplug. Watches for Apple iOS devices over USB,
-// switches them into mux mode, claims the right interface, and hands
-// the bulk endpoints off to a per-device usb_mux task. Disconnects
-// signal the manager to drop the device.
+// nusb-based USB enumeration / hotplug / per-device wiring. Used on
+// every platform except Windows. On Windows the libusbK backend takes
+// over because nusb's WinUSB backend cannot call SetConfiguration on a
+// composite device.
+
+#![cfg(not(target_os = "windows"))]
 
 use std::collections::HashMap;
 use std::sync::Arc;
-#[cfg(not(target_os = "windows"))]
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use idevice::{Idevice, services::lockdown::LockdownClient};
 use log::{debug, info, trace, warn};
 use nusb::DeviceId;
 use nusb::descriptors::TransferType;
 use nusb::hotplug::HotplugEvent;
-use nusb::transfer::{Bulk, Direction, In, Out};
-#[cfg(not(target_os = "windows"))]
-use nusb::transfer::{ControlIn, ControlType, Recipient};
+use nusb::transfer::{Bulk, ControlIn, ControlType, Direction, In, Out, Recipient};
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
 use crate::config::NetmuxdConfig;
-use crate::manager::{ManagerRequest, ManagerRequestType, ManagerSender};
+use crate::manager::ManagerSender;
 use crate::pairing_file::PairingFileFinder;
 use crate::usb_mux::{self, UsbMuxHandle};
 
-const APPLE_VID: u16 = 0x05ac;
-const PID_RANGE_LOW: u16 = 0x1290;
-const PID_RANGE_HIGH: u16 = 0x12af;
+use super::{
+    APPLE_VID, INTERFACE_CLASS, INTERFACE_PROTOCOL, INTERFACE_SUBCLASS, PID_RANGE_HIGH,
+    PID_RANGE_LOW, pair_via_usb, register_with_manager, resolve_paired_udid, send_remove,
+};
 
-const INTERFACE_CLASS: u8 = 0xff;
-const INTERFACE_SUBCLASS: u8 = 0xfe;
-const INTERFACE_PROTOCOL: u8 = 0x02;
+const READER_BUF: usize = 16384;
+const WRITER_BUF: usize = 16384;
 
 // Apple vendor-specific USB request: switch the device into a mode
 // that exposes a particular set of configurations. See
@@ -45,10 +43,7 @@ const APPLE_VEND_SET_MODE: u8 = 0x52;
 // available.
 const TARGET_MODE: u16 = 3;
 
-const READER_BUF: usize = 16384;
-const WRITER_BUF: usize = 16384;
-
-pub async fn discover(sender: ManagerSender, config: NetmuxdConfig) {
+pub(super) async fn run(sender: ManagerSender, config: NetmuxdConfig) {
     let pairing_file_finder = PairingFileFinder::new(&config);
 
     // Map nusb DeviceId -> UDID, so we can issue RemoveDevice on
@@ -102,15 +97,7 @@ pub async fn discover(sender: ManagerSender, config: NetmuxdConfig) {
                 let udid = { known.lock().await.remove(&id) };
                 if let Some(udid) = udid {
                     info!("USB device {udid} disconnected");
-                    let _ = sender
-                        .send(ManagerRequest {
-                            request_type: ManagerRequestType::RemoveDevice {
-                                udid,
-                                connection_type: Some("USB".into()),
-                            },
-                            response: None,
-                        })
-                        .await;
+                    send_remove(&sender, udid).await;
                 }
             }
         }
@@ -162,43 +149,34 @@ async fn handle_connected(
         Some(t) => t,
         None => {
             // Device is in a mode (e.g. mode 5 / NCM Direct on
-            // iOS 17+) where the mux interface isn't exposed.
-            // On non-Windows hosts we send the vendor SET_MODE
-            // control transfer to switch into mode 3 (mux + NCM,
-            // iOS 10.3+); mode 3 triggers a USB reconnect, so we
-            // drop this handle and let hotplug re-fire the
-            // Connected event with the new configs.
-            #[cfg(not(target_os = "windows"))]
+            // iOS 17+) where the mux interface isn't exposed. Send
+            // the vendor SET_MODE control transfer to switch into
+            // mode 3 (mux + NCM, iOS 10.3+); mode 3 triggers a USB
+            // reconnect, so we drop this handle and let hotplug
+            // re-fire the Connected event with the new configs.
+            info!(
+                "No usbmux interface on {serial:?}; switching to mode {TARGET_MODE} via SET_MODE",
+            );
+            match device
+                .control_in(
+                    ControlIn {
+                        control_type: ControlType::Vendor,
+                        recipient: Recipient::Device,
+                        request: APPLE_VEND_SET_MODE,
+                        value: 0,
+                        index: TARGET_MODE,
+                        length: 1,
+                    },
+                    Duration::from_secs(2),
+                )
+                .await
             {
-                info!(
-                    "No usbmux interface on {serial:?}; switching to mode {TARGET_MODE} via SET_MODE",
-                );
-                match device
-                    .control_in(
-                        ControlIn {
-                            control_type: ControlType::Vendor,
-                            recipient: Recipient::Device,
-                            request: APPLE_VEND_SET_MODE,
-                            value: 0,
-                            index: TARGET_MODE,
-                            length: 1,
-                        },
-                        Duration::from_secs(2),
-                    )
-                    .await
-                {
-                    Ok(resp) => {
-                        debug!("SET_MODE {TARGET_MODE} on {serial:?} returned {:?}", resp);
-                    }
-                    Err(e) => {
-                        debug!("SET_MODE {TARGET_MODE} on {serial:?} errored: {e:?}");
-                    }
+                Ok(resp) => {
+                    debug!("SET_MODE {TARGET_MODE} on {serial:?} returned {:?}", resp);
                 }
-            }
-            #[cfg(target_os = "windows")]
-            {
-                // TODO: idk find a way to do this
-                warn!("Windows is dumb and we can't switch the device mode. You're SoL");
+                Err(e) => {
+                    debug!("SET_MODE {TARGET_MODE} on {serial:?} errored: {e:?}");
+                }
             }
             return;
         }
@@ -333,10 +311,6 @@ async fn handle_connected(
                     }
                 }
             });
-            // We don't yet have a confirmed UDID. Register raw_udid
-            // in `known` as a placeholder. The pair task replaces
-            // it on success, and disconnect cleanup uses whatever's
-            // current.
             None
         }
     };
@@ -348,9 +322,6 @@ async fn handle_connected(
     }
 
     // When the mux task exits (USB error / device gone), clean up.
-    // We look up the UDID from `known` at exit time so we use whatever
-    // was registered last. Pairing may have replaced the raw serial
-    // with the canonical UDID after the entry was first inserted.
     let known = known.clone();
     let sender = sender.clone();
     tokio::spawn(async move {
@@ -358,103 +329,9 @@ async fn handle_connected(
         let removed = { known.lock().await.remove(&id) };
         if let Some(udid) = removed {
             trace!("USB mux task for {udid} exited");
-            let _ = sender
-                .send(ManagerRequest {
-                    request_type: ManagerRequestType::RemoveDevice {
-                        udid,
-                        connection_type: Some("USB".into()),
-                    },
-                    response: None,
-                })
-                .await;
+            send_remove(&sender, udid).await;
         }
     });
-}
-
-async fn register_with_manager(
-    sender: &ManagerSender,
-    udid: String,
-    handle: UsbMuxHandle,
-    location_id: u64,
-    product_id: u64,
-    speed: u64,
-) {
-    if let Err(e) = sender
-        .send(ManagerRequest {
-            request_type: ManagerRequestType::DiscoveredUsbDevice {
-                udid: udid.clone(),
-                location_id,
-                product_id,
-                speed,
-                handle,
-            },
-            response: None,
-        })
-        .await
-    {
-        warn!("Failed to forward discovered USB device {udid}: {e:?}");
-    }
-}
-
-/// Run the lockdown Pair flow over the USB mux. Blocks while the
-/// device displays the Trust prompt to the user. On success, writes
-/// the pairing record to disk and returns the canonical UDID we used
-/// as the filename.
-async fn pair_via_usb(
-    pairing_finder: &PairingFileFinder,
-    handle: &UsbMuxHandle,
-    raw_udid: &str,
-) -> Result<String, String> {
-    let stream = handle
-        .connect(LockdownClient::LOCKDOWND_PORT)
-        .await
-        .map_err(|e| format!("usb connect to lockdown: {e:?}"))?;
-
-    let idevice = Idevice::new(Box::new(stream), "netmuxd-pair");
-    let mut lockdown = LockdownClient { idevice };
-
-    // Ask the device for its canonical UDID
-    let canonical_udid = match lockdown.get_value(Some("UniqueDeviceID"), None).await {
-        Ok(v) => v
-            .as_string()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "UniqueDeviceID not a string".to_string())?,
-        Err(e) => {
-            // Fallback: synthesize the dashed form from the raw 24-char serial.
-            warn!("GetValue(UniqueDeviceID) failed: {e:?}; using synthesized UDID");
-            if raw_udid.len() == 24 && raw_udid.chars().all(|c| c.is_ascii_hexdigit()) {
-                format!("{}-{}", &raw_udid[..8], &raw_udid[8..])
-            } else {
-                raw_udid.to_string()
-            }
-        }
-    };
-
-    let (host_id, system_buid) = pairing_finder
-        .get_host_identity()
-        .await
-        .map_err(|e| format!("read host identity: {e:?}"))?;
-
-    info!("Calling lockdown.pair() for {canonical_udid} (waiting for user trust)");
-    let mut pairing_file = lockdown
-        .pair(host_id, system_buid)
-        .await
-        .map_err(|e| format!("lockdown pair: {e:?}"))?;
-    pairing_file.udid = Some(canonical_udid.clone());
-
-    let bytes = pairing_file
-        .serialize()
-        .map_err(|e| format!("serialize pairing file: {e:?}"))?;
-    let path = std::path::PathBuf::from(pairing_finder.plist_storage())
-        .join(format!("{canonical_udid}.plist"));
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    tokio::fs::write(&path, &bytes)
-        .await
-        .map_err(|e| format!("write {path:?}: {e:?}"))?;
-
-    Ok(canonical_udid)
 }
 
 struct MuxTarget {
@@ -498,19 +375,6 @@ fn find_mux_target(device: &nusb::Device) -> Option<MuxTarget> {
                     });
                 }
             }
-        }
-    }
-    None
-}
-
-async fn resolve_paired_udid(finder: &PairingFileFinder, raw: &str) -> Option<String> {
-    let mut candidates: Vec<String> = vec![raw.to_string()];
-    if raw.len() == 24 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
-        candidates.push(format!("{}-{}", &raw[..8], &raw[8..]));
-    }
-    for udid in candidates {
-        if finder.get_pairing_record(&udid).await.is_ok() {
-            return Some(udid);
         }
     }
     None

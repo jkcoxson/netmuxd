@@ -21,6 +21,10 @@ use tokio::{
 mod config;
 mod devices;
 mod heartbeat;
+#[cfg(target_os = "windows")]
+mod libusbk;
+#[cfg(target_os = "windows")]
+mod libwdi;
 mod manager;
 mod mdns;
 mod pairing_file;
@@ -30,6 +34,22 @@ mod usb_mux;
 
 #[tokio::main]
 async fn main() {
+    // `install` / `uninstall` / `export-driver` are one-shot driver-
+    // management subcommands that don't run the daemon.
+    #[cfg(target_os = "windows")]
+    match std::env::args().nth(1).as_deref() {
+        Some("install") => std::process::exit(libwdi::run_install()),
+        Some("uninstall") => std::process::exit(libwdi::run_uninstall()),
+        Some("export-driver") => {
+            let out = std::env::args().nth(2).unwrap_or_else(|| {
+                eprintln!("Usage: netmuxd export-driver <output-dir>");
+                std::process::exit(2);
+            });
+            std::process::exit(libwdi::run_export(&out));
+        }
+        _ => {}
+    }
+
     println!("Starting netmuxd");
 
     env_logger::init();

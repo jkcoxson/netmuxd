@@ -20,7 +20,7 @@ sha256   = "be79ff961872ccf3e9d0274ee85c6df568d6c16c7d588879f912166682614660"
 
 [targets."i686-pc-windows-msvc"]
 filename = "netmuxd-vendor-i686-pc-windows-msvc.zip"
-sha256   = "3b0ae87190d75fbf53a8b4ad31009a8b847d93320a16ec1ebaa884c26b82c8bd"
+sha256   = "9d675a1aa19404ac0eeec39cf791dfc68231c30ab6baed4a3787c5870d509f11"
 
 [targets."aarch64-pc-windows-msvc"]
 filename = "netmuxd-vendor-aarch64-pc-windows-msvc.zip"

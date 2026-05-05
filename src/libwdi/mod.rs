@@ -33,7 +33,8 @@ use std::ptr;
 
 mod ffi;
 
-use crate::usb::{APPLE_VID, PID_RANGE_HIGH, PID_RANGE_LOW};
+use crate::daemon::{PID_RANGE_HIGH, PID_RANGE_LOW};
+use crate::usb::apple::APPLE_VID;
 
 const VENDOR_NAME: &str = "Apple Inc.";
 const INF_NAME: &str = "netmuxd_libusb0.inf";

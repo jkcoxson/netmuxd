@@ -16,15 +16,21 @@ name = "add_device"
 path = "src/add_device.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+# Wasm-safe subset always on; native pulls the rest via target deps below.
+tokio = { version = "1", default-features = false, features = [
+  "sync",
+  "macros",
+  "io-util",
+] }
 futures-util = { version = "0.3.21" }
-crossfire = { version = "2.1", features = ["tokio"] }
 
-mdns-sd = "0.19"
-nusb = { version = "0.2", features = ["tokio"] }
+# nusb on the webusb branch — local path until that branch lands a release.
+# `tokio` feature is native-only (it pulls tokio's blocking IO threadpool
+# which doesn't compile on wasm32); see target deps below.
+nusb = { git = "https://github.com/jkcoxson/nusb", branch = "webusb", default-features = false }
 
-idevice = { version = "0.1.43", features = ["usbmuxd", "heartbeat", "pair"] }
 plist = "1.8"
+plist-macro = "0.1.6"
 
 hkdf = "0.12"
 hmac = "0.12"
@@ -32,6 +38,50 @@ sha2 = "0.10"
 base64 = "0.22"
 
 log = { version = "0.4.16" }
-env_logger = { version = "0.11" }
-colored = { version = "3.0.0" }
+thiserror = "2"
+
+# Native-only deps: anything that touches sockets/fs/threads, mdns, or
+# tokio's net runtime. The wasm library doesn't include the manager,
+# daemon, or mdns code so these aren't needed there.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["full"] }
+nusb = { git = "https://github.com/jkcoxson/nusb", branch = "webusb", default-features = false, features = [
+  "tokio",
+] }
+crossfire = { version = "2.1", features = ["tokio"] }
+mdns-sd = "0.19"
+idevice = { version = "0.1.59", default-features = false, features = [
+  "aws-lc",
+  "usbmuxd",
+  "heartbeat",
+  "pair",
+] }
+env_logger = "0.11"
+colored = "3.0.0"
 uuid = { version = "1.11", features = ["v4"] }
+
+# wasm32-unknown-unknown: pull the JS executor for `crate::spawn` and
+# the wasm-friendly idevice TLS backend.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { version = "0.4", optional = true }
+idevice = { version = "0.1.59", default-features = false, features = [
+  "heartbeat",
+  "pair",
+  "wasm",
+] }
+# Forward `js`/`wasm_js` to transitive `getrandom` (uuid v4 needs it).
+getrandom_02 = { package = "getrandom", version = "0.2", default-features = false, features = [
+  "js",
+], optional = true }
+getrandom_04 = { package = "getrandom", version = "0.4", default-features = false, features = [
+  "wasm_js",
+], optional = true }
+
+[features]
+default = []
+# Enables wasm32-unknown-unknown support for the library surface
+# (`usb_mux`, `raw_packet`, `devices`, plus the `crate::spawn` shim).
+# Consumers must bring their own transport: enumerate via nusb directly
+# and feed the bulk endpoints to `usb_mux::spawn`. The daemon, mdns,
+# pairing-file finder, and manager are not available on this target.
+wasm = ["dep:wasm-bindgen-futures", "dep:getrandom_02", "dep:getrandom_04"]

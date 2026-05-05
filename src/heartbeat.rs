@@ -30,7 +30,7 @@ pub async fn heartbeat(
                 warn!("Failed to connect to lockdown port: {e:?}");
                 if let Some(response) = response {
                     response
-                        .send(idevice::plist!(dict {
+                        .send(plist_macro::plist!(dict {
                         "Result": 0,
                         }))
                         .ok();
@@ -47,7 +47,7 @@ pub async fn heartbeat(
             warn!("Failed to start lockdown session: {e:?}");
             if let Some(response) = response {
                 response
-                    .send(idevice::plist!(dict {
+                    .send(plist_macro::plist!(dict {
                     "Result": 0,
                     }))
                     .ok();
@@ -64,7 +64,7 @@ pub async fn heartbeat(
                 warn!("Failed to start heartbeat service: {e:?}");
                 if let Some(response) = response {
                     response
-                        .send(idevice::plist!(dict {
+                        .send(plist_macro::plist!(dict {
                         "Result": 0,
                         }))
                         .ok();
@@ -80,7 +80,7 @@ pub async fn heartbeat(
                 warn!("Failed to connect to heartbeat port: {e:?}");
                 if let Some(response) = response {
                     response
-                        .send(idevice::plist!(dict {
+                        .send(plist_macro::plist!(dict {
                         "Result": 0,
                         }))
                         .ok();
@@ -92,11 +92,11 @@ pub async fn heartbeat(
         let socket = Box::new(socket);
         let mut idevice = Idevice::new(socket, "heartbeat_client");
 
-        if let Err(e) = idevice.start_session(&pairing_file).await {
+        if let Err(e) = idevice.start_session(&pairing_file, false).await {
             warn!("Failed to wrap heartbeat client in TLS: {e:?}");
             if let Some(response) = response {
                 response
-                    .send(idevice::plist!(dict {
+                    .send(plist_macro::plist!(dict {
                     "Result": 0,
                     }))
                     .ok();

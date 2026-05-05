@@ -3,12 +3,17 @@
 #[cfg(unix)]
 use std::{fs, os::unix::prelude::PermissionsExt};
 
-use crate::{
+use netmuxd::{
     config::NetmuxdConfig,
-    manager::{ManagerRequest, ManagerSender, new_manager_thread},
+    daemon,
+    manager::{self, ManagerRequest, ManagerSender, new_manager_thread},
+    mdns,
     pairing_file::PairingFileFinder,
-    raw_packet::RawPacket,
+    raw_packet::{self, RawPacket},
 };
+
+#[cfg(target_os = "windows")]
+use netmuxd::{libusbk, libwdi};
 
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + ?Sized> AsyncReadWrite for T {}
@@ -17,20 +22,6 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::oneshot::channel,
 };
-
-mod config;
-mod devices;
-mod heartbeat;
-#[cfg(target_os = "windows")]
-mod libusbk;
-#[cfg(target_os = "windows")]
-mod libwdi;
-mod manager;
-mod mdns;
-mod pairing_file;
-mod raw_packet;
-mod usb;
-mod usb_mux;
 
 #[tokio::main]
 async fn main() {
@@ -125,7 +116,7 @@ async fn main() {
         let manager_sender = manager_sender.clone();
         let config = config.clone();
         tokio::spawn(async move {
-            usb::discover(manager_sender, config).await;
+            daemon::discover(manager_sender, config).await;
             error!("USB discovery stopped");
         });
     }
@@ -348,7 +339,7 @@ async fn handle_stream(
                                     return;
                                 }
                             };
-                            println!("{}", idevice::pretty_print_dictionary(&res));
+                            println!("{}", plist_macro::pretty_print_dictionary(&res));
 
                             let res = RawPacket::new(res, 1, 8, parsed.tag);
                             let res: Vec<u8> = res.into();

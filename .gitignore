@@ -16,3 +16,6 @@ vendor/.vendor-stamp-*
 
 # Local vendor zip cache (used during bundle production, not committed).
 /vendor-bundles/
+
+/wasm-test/target
+/wasm-test/dist

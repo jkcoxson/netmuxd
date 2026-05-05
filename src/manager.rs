@@ -11,7 +11,7 @@ use tokio::sync::oneshot::Sender;
 
 use crate::{
     config::NetmuxdConfig, devices::MuxerDevice, heartbeat::heartbeat,
-    pairing_file::PairingFileFinder, usb_mux::UsbMuxHandle,
+    pairing_file::PairingFileFinder, usb::mux::UsbMuxHandle,
 };
 
 pub type ManagerSender = MAsyncTx<ManagerRequest>;
@@ -185,7 +185,7 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                     devices.insert(device.device_id, device);
                     if let Some(response) = message.response {
                         response
-                            .send(idevice::plist!(dict {
+                            .send(plist_macro::plist!(dict {
                             "Result": 1,
                             }))
                             .ok();
@@ -225,7 +225,7 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                     devices.insert(device.device_id, device);
                     if let Some(response) = response {
                         response
-                            .send(idevice::plist!(dict {
+                            .send(plist_macro::plist!(dict {
                             "Result": 1,
                             }))
                             .ok();
@@ -258,7 +258,7 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                     if let Some(response) = message.response {
                         let mut device_list = Vec::new();
                         for d in devices.values() {
-                            let to_push = idevice::plist!(dict {
+                            let to_push = plist_macro::plist!(dict {
                                 "DeviceID": d.device_id,
                                 "MessageType": "Attached",
                                 "Properties": plist::Value::Dictionary(d.into()),
@@ -266,7 +266,7 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                             device_list.push(plist::Value::Dictionary(to_push));
                         }
                         response
-                            .send(idevice::plist!(dict {
+                            .send(plist_macro::plist!(dict {
                                 "DeviceList": device_list
                             }))
                             .ok();

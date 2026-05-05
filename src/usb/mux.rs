@@ -139,7 +139,7 @@ where
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let handle = UsbMuxHandle { cmd: cmd_tx };
 
-    tokio::spawn(async move {
+    crate::spawn(async move {
         if let Err(e) = run(device_id, &serial, reader, writer, cmd_rx).await {
             warn!("USB mux task for device {device_id} ({serial}) exited: {e:?}");
         } else {
@@ -376,7 +376,7 @@ where
                     conn.write_half = Some(our_write);
                     let sport = conn.sport;
                     let tx_data = tx_data.clone();
-                    tokio::spawn(async move {
+                    crate::spawn(async move {
                         let mut buf = vec![0u8; MAX_PAYLOAD];
                         loop {
                             match our_read.read(&mut buf).await {

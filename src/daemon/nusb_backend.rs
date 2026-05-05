@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 use crate::config::NetmuxdConfig;
 use crate::manager::ManagerSender;
 use crate::pairing_file::PairingFileFinder;
-use crate::usb_mux::{self, UsbMuxHandle};
+use crate::usb::mux::{self, UsbMuxHandle};
 
 use super::{
     APPLE_VID, INTERFACE_CLASS, INTERFACE_PROTOCOL, INTERFACE_SUBCLASS, PID_RANGE_HIGH,
@@ -251,7 +251,7 @@ async fn handle_connected(
     // We always need the mux task running before we can either pair
     // (which talks to lockdown over the mux) or register the device
     let (exit_tx, exit_rx) = oneshot::channel::<u64>();
-    let handle: UsbMuxHandle = usb_mux::spawn(0, raw_udid.clone(), reader, writer, exit_tx);
+    let handle: UsbMuxHandle = mux::spawn(0, raw_udid.clone(), reader, writer, exit_tx);
 
     let registered_udid = match existing_udid {
         Some(udid) => {

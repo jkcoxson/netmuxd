@@ -43,7 +43,7 @@ jobs:
         run: Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ hashFiles('vendor-manifest.toml') }}
       # Cache the extracted vendor/ tree so we don't re-download libusbK
       # + libwdi binaries on every run. Keyed by manifest content so
       # bumping the version invalidates automatically.

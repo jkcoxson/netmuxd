@@ -76,9 +76,11 @@ struct MuxTarget {
 
 /// All mux-bearing configurations in the order we want to try them.
 ///
-/// Non-active configurations come first because switching to them tears down
-/// any kernel binding (AMD/usbmuxd) that exists in the active config. The
-/// active config is included as a final fallback.
+/// The currently-active config goes first, because trying it requires no
+/// `selectConfiguration` call and so doesn't trip Linux's "another claimer
+/// holds an interface" rejection. Non-active configs follow, used by retry
+/// attempts that lean on macOS's IOKit ability to preempt drivers during
+/// SET_CONFIGURATION.
 fn collect_mux_candidates(device: &Device) -> Vec<MuxTarget> {
     let active = device
         .active_configuration()
@@ -120,12 +122,12 @@ fn collect_mux_candidates(device: &Device) -> Vec<MuxTarget> {
 
     let mut ordered: Vec<MuxTarget> = all
         .iter()
-        .filter(|t| Some(t.config_value) != active)
+        .filter(|t| Some(t.config_value) == active)
         .copied()
         .collect();
     ordered.extend(
         all.iter()
-            .filter(|t| Some(t.config_value) == active)
+            .filter(|t| Some(t.config_value) != active)
             .copied(),
     );
     ordered
@@ -203,11 +205,21 @@ pub const DEFAULT_CLAIM_ATTEMPTS: usize = 6;
 
 /// Like [`open_mux`] but lets the caller pick the attempt budget.
 ///
-/// On macOS, `claim_interface` races `AppleMobileDevice` / usbmuxd's
-/// hotplug callback. We can't always win on the first try, but the race
-/// resets every time we change configurations, so each retry switches to
-/// a different mux-bearing configuration (or bounces through a non-mux
-/// configuration first) before claiming again.
+/// Strategy:
+/// - Attempt 0 tries the active mux config without calling
+///   `selectConfiguration`. This is the cheap path: no `SET_CONFIGURATION`
+///   request is issued so the kernel never sees EBUSY even when another
+///   process holds an interface in the active config.
+/// - Subsequent attempts issue `device.reset()` first. A USB port-level
+///   reset that maps to `USBDEVFS_RESET` on Linux and the equivalent
+///   IOKit ioctl on macOS. The reset evicts every claimer (kernel-driver
+///   *and* libusb-based userspace claimers like `usbmuxd`) and triggers
+///   re-enumeration. Chrome already holds the device handle, so it gets
+///   to claim before the other side's hotplug callback can reattach.
+/// - After the reset, retries also cycle through alternate mux-bearing
+///   configurations (with a bounce through a non-mux config first) so we
+///   exercise different timings and pick up macOS's IOKit-preemption
+///   trick if the reset alone isn't enough.
 pub async fn open_mux_with_retries(
     info: &DeviceInfo,
     max_attempts: usize,
@@ -233,31 +245,41 @@ pub async fn open_mux_with_retries(
     let attempts = max_attempts.max(1);
     let mut last_err: Option<OpenMuxError> = None;
     for attempt in 0..attempts {
-        // For retries past the first, bounce through a no-mux configuration
-        // to break any kernel binding that grabbed the interface during the
-        // last failed claim.
-        if attempt > 0
-            && let Some(no_mux) = no_mux_config
-        {
-            let _ = device.set_configuration(no_mux).await;
+        // Retries past the first kick everyone off the device with a
+        // port-level reset, then race to claim before the previous holder
+        // (e.g. usbmuxd) can reattach via the kernel's hotplug callback.
+        // We ignore the result. A reset failure isn't fatal, we just
+        // proceed to the claim and let it surface its own error.
+        if attempt > 0 {
+            let _ = device.reset().await;
         }
 
-        // Rotate through mux-bearing candidates so consecutive retries
-        // exercise different configurations.
         let target = candidates[attempt % candidates.len()];
-
         let active = device
             .active_configuration()
             .ok()
             .map(|c| c.configuration_value());
-        if active != Some(target.config_value)
-            && let Err(e) = device.set_configuration(target.config_value).await
-        {
-            last_err = Some(OpenMuxError::SetConfiguration {
-                config: target.config_value,
-                error: format!("{e:?}"),
-            });
-            continue;
+
+        // Attempt 0 only switches if the active config doesn't even have a
+        // mux interface; we ordered candidates active-first, so usually
+        // `target.config_value == active` and we skip the switch entirely.
+        // Subsequent attempts always switch (after the reset above),
+        // optionally bouncing through a non-mux config first to break any
+        // stale kernel binding that survived.
+        let needs_switch = active != Some(target.config_value);
+        if needs_switch {
+            if attempt > 0
+                && let Some(no_mux) = no_mux_config
+            {
+                let _ = device.set_configuration(no_mux).await;
+            }
+            if let Err(e) = device.set_configuration(target.config_value).await {
+                last_err = Some(OpenMuxError::SetConfiguration {
+                    config: target.config_value,
+                    error: format!("{e:?} (attempt {}/{attempts})", attempt + 1),
+                });
+                continue;
+            }
         }
 
         let interface = match device

@@ -11,8 +11,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
 use nusb::Endpoint;
-use nusb::transfer::{Buffer, In, Out};
 pub use nusb::transfer::Bulk;
+use nusb::transfer::{Buffer, In, Out};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// Default per-IN-transfer buffer size. Apple's mux pipe accepts up to

@@ -7,7 +7,7 @@ use std::{collections::HashMap, net::IpAddr};
 
 use crossfire::{AsyncRx, MAsyncTx, mpmc::unbounded_async};
 use log::debug;
-use tokio::sync::oneshot::Sender;
+use tokio::sync::{mpsc::UnboundedSender, oneshot::Sender};
 
 use crate::{
     config::NetmuxdConfig, devices::MuxerDevice, heartbeat::heartbeat,
@@ -56,6 +56,15 @@ pub enum ManagerRequestType {
         device_id: u64,
         kill: Sender<()>,
     },
+    Subscribe {
+        listener: UnboundedSender<ListenerEvent>,
+    },
+}
+
+#[derive(Clone)]
+pub enum ListenerEvent {
+    Attached(plist::Dictionary),
+    Detached(u64),
 }
 
 #[derive(Clone)]
@@ -117,6 +126,18 @@ fn drop_entry(
     usb_handles.remove(&id)
 }
 
+fn attached_plist(device: &MuxerDevice) -> plist::Dictionary {
+    plist_macro::plist!(dict {
+        "DeviceID": device.device_id,
+        "MessageType": "Attached",
+        "Properties": plist::Value::Dictionary(device.into()),
+    })
+}
+
+fn broadcast(listeners: &mut Vec<UnboundedSender<ListenerEvent>>, event: ListenerEvent) {
+    listeners.retain(|tx| tx.send(event.clone()).is_ok());
+}
+
 pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
     let (manager_sender, manager_recv) = new_channel_pair();
     let to_return = manager_sender.clone();
@@ -126,6 +147,7 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
     let mut devices: HashMap<u64, MuxerDevice> = HashMap::new();
     let mut usb_handles: HashMap<u64, UsbMuxHandle> = HashMap::new();
     let mut open_sockets: HashMap<u64, Vec<Sender<()>>> = HashMap::new();
+    let mut listeners: Vec<UnboundedSender<ListenerEvent>> = Vec::new();
     let mut last_index: u64 = 1;
     let mut last_interface_index: u64 = 1;
 
@@ -182,7 +204,9 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                         continue;
                     }
 
+                    let attached = attached_plist(&device);
                     devices.insert(device.device_id, device);
+                    broadcast(&mut listeners, ListenerEvent::Attached(attached));
                     if let Some(response) = message.response {
                         response
                             .send(plist_macro::plist!(dict {
@@ -215,14 +239,18 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                         product_id: Some(product_id),
                     };
                     println!("Adding USB device {udid}");
+                    let attached = attached_plist(&device);
                     devices.insert(last_index, device);
                     usb_handles.insert(last_index, handle);
+                    broadcast(&mut listeners, ListenerEvent::Attached(attached));
                     last_index = last_index.wrapping_add(1);
                     last_interface_index = last_interface_index.wrapping_add(1);
                 }
                 ManagerRequestType::DeferredMuxerAdd { device, response } => {
                     println!("Adding network device {}", device.serial_number);
+                    let attached = attached_plist(&device);
                     devices.insert(device.device_id, device);
+                    broadcast(&mut listeners, ListenerEvent::Attached(attached));
                     if let Some(response) = response {
                         response
                             .send(plist_macro::plist!(dict {
@@ -252,18 +280,14 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                         {
                             h.shutdown().await;
                         }
+                        broadcast(&mut listeners, ListenerEvent::Detached(id));
                     }
                 }
                 ManagerRequestType::ListDevices => {
                     if let Some(response) = message.response {
                         let mut device_list = Vec::new();
                         for d in devices.values() {
-                            let to_push = plist_macro::plist!(dict {
-                                "DeviceID": d.device_id,
-                                "MessageType": "Attached",
-                                "Properties": plist::Value::Dictionary(d.into()),
-                            });
-                            device_list.push(plist::Value::Dictionary(to_push));
+                            device_list.push(plist::Value::Dictionary(attached_plist(d)));
                         }
                         response
                             .send(plist_macro::plist!(dict {
@@ -283,10 +307,26 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                 ManagerRequestType::HeartbeatFailed { udid } => {
                     if let Some(id) = find_device_id(&devices, &udid, "Network") {
                         drop_entry(id, &mut devices, &mut usb_handles, &mut open_sockets);
+                        broadcast(&mut listeners, ListenerEvent::Detached(id));
                     }
                 }
                 ManagerRequestType::OpenSocket { device_id, kill } => {
                     open_sockets.entry(device_id).or_default().push(kill);
+                }
+                ManagerRequestType::Subscribe { listener } => {
+                    let mut ok = true;
+                    for d in devices.values() {
+                        if listener
+                            .send(ListenerEvent::Attached(attached_plist(d)))
+                            .is_err()
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        listeners.push(listener);
+                    }
                 }
             }
         }

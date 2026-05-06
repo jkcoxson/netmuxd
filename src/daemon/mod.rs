@@ -23,15 +23,15 @@ use crate::usb::mux::UsbMuxHandle;
 // `super::*` without each maintaining its own copy.
 pub(crate) use crate::usb::apple::{
     APPLE_VID, MUX_INTERFACE_CLASS as INTERFACE_CLASS,
-    MUX_INTERFACE_PROTOCOL as INTERFACE_PROTOCOL,
-    MUX_INTERFACE_SUBCLASS as INTERFACE_SUBCLASS, PID_RANGE,
+    MUX_INTERFACE_PROTOCOL as INTERFACE_PROTOCOL, MUX_INTERFACE_SUBCLASS as INTERFACE_SUBCLASS,
+    PID_RANGE,
 };
 
 // Backend modules.
-#[cfg(not(target_os = "windows"))]
-mod nusb_backend;
 #[cfg(target_os = "windows")]
 mod libusbk_backend;
+#[cfg(not(target_os = "windows"))]
+mod nusb_backend;
 
 pub(crate) const PID_RANGE_LOW: u16 = *PID_RANGE.start();
 pub(crate) const PID_RANGE_HIGH: u16 = *PID_RANGE.end();
@@ -132,10 +132,7 @@ pub(crate) async fn pair_via_usb(
     Ok(canonical_udid)
 }
 
-pub(crate) async fn resolve_paired_udid(
-    finder: &PairingFileFinder,
-    raw: &str,
-) -> Option<String> {
+pub(crate) async fn resolve_paired_udid(finder: &PairingFileFinder, raw: &str) -> Option<String> {
     let mut candidates: Vec<String> = vec![raw.to_string()];
     if raw.len() == 24 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
         candidates.push(format!("{}-{}", &raw[..8], &raw[8..]));

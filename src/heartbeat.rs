@@ -1,6 +1,6 @@
 // Jackson Coxson
 
-use idevice::{heartbeat::HeartbeatClient, lockdown::LockdownClient, Idevice};
+use idevice::{Idevice, heartbeat::HeartbeatClient, lockdown::LockdownClient};
 use log::{debug, info, warn};
 use std::net::SocketAddr;
 use tokio::sync::oneshot::Sender;

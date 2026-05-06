@@ -159,7 +159,7 @@ async fn handle_stream(
 
             let packet_size =
                 u32::from_le_bytes(header[0..4].try_into().expect("16-byte header")) as usize;
-            if packet_size < 16 || packet_size > MAX_PACKET_SIZE {
+            if !(16..=MAX_PACKET_SIZE).contains(&packet_size) {
                 warn!("Bogus packet size from client: {packet_size}");
                 return;
             }
@@ -167,14 +167,14 @@ async fn handle_stream(
             // Pull the rest of the packet body.
             let mut buffer = vec![0u8; packet_size];
             buffer[..16].copy_from_slice(&header);
-            if packet_size > 16 {
-                if let Err(e) = socket.read_exact(&mut buffer[16..]).await {
-                    warn!(
-                        "Failed reading packet body ({} bytes): {e:?}",
-                        packet_size - 16
-                    );
-                    return;
-                }
+            if packet_size > 16
+                && let Err(e) = socket.read_exact(&mut buffer[16..]).await
+            {
+                warn!(
+                    "Failed reading packet body ({} bytes): {e:?}",
+                    packet_size - 16
+                );
+                return;
             }
             let buffer = &mut buffer;
 

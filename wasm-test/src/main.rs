@@ -14,7 +14,11 @@
 //!     a `.plist` on disk.
 
 use idevice::pairing_file::PairingFile;
-use idevice::{Idevice, services::lockdown::LockdownClient};
+use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
+use idevice::services::core_device::AppServiceClient;
+use idevice::services::core_device_proxy::CoreDeviceProxy;
+use idevice::services::rsd::RsdHandshake;
+use idevice::{Idevice, ReadWrite, RemoteXpcClient, services::lockdown::LockdownClient};
 use netmuxd::usb::apple::{self, APPLE_VID};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -25,6 +29,8 @@ use web_sys::{
 };
 
 const PAIRING_STORAGE_KEY: &str = "pairing_file_xml";
+const RP_PAIRING_STORAGE_KEY: &str = "rp_pairing_file_xml";
+const RP_HOSTNAME: &str = "netmuxd-wasm-test";
 
 fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
@@ -85,7 +91,7 @@ async fn request_permission() -> Result<(), String> {
     let filters = [filter];
     let opts = UsbDeviceRequestOptions::new(&filters);
 
-    log_line("Requesting WebUSB device picker…");
+    log_line("Requesting WebUSB device picker...");
     JsFuture::from(usb.request_device(&opts))
         .await
         .map_err(|e| format!("requestDevice: {e:?}"))?;
@@ -95,10 +101,10 @@ async fn request_permission() -> Result<(), String> {
 
 /// Open the WebUSB device, claim the mux interface, and spawn the
 /// usbmuxd-v2 task. Caller uses the returned `UsbMuxHandle` to open as many
-/// virtual TCP streams as it wants — keep the handle alive for the duration
+/// virtual TCP streams as it wants - keep the handle alive for the duration
 /// of all those streams.
 async fn open_mux_handle() -> Result<netmuxd::usb::mux::UsbMuxHandle, String> {
-    log_line("Listing devices via nusb…");
+    log_line("Listing devices via nusb...");
     let info = nusb::list_devices()
         .await
         .map_err(|e| format!("list_devices: {e}"))?
@@ -114,7 +120,7 @@ async fn open_mux_handle() -> Result<netmuxd::usb::mux::UsbMuxHandle, String> {
         info.serial_number().unwrap_or("(no serial)"),
     ));
 
-    log_line("Opening device + claiming mux interface…");
+    log_line("Opening device + claiming mux interface...");
     let opened = apple::open_mux(&info)
         .await
         .map_err(|e| format!("open_mux: {e}"))?;
@@ -127,7 +133,7 @@ async fn open_mux_handle() -> Result<netmuxd::usb::mux::UsbMuxHandle, String> {
         })
         .unwrap_or_default();
 
-    log_line("Spawning usbmuxd-v2 mux task…");
+    log_line("Spawning usbmuxd-v2 mux task...");
     let (exit_tx, _exit_rx) = tokio::sync::oneshot::channel();
     Ok(netmuxd::usb::mux::spawn(
         1,
@@ -139,7 +145,7 @@ async fn open_mux_handle() -> Result<netmuxd::usb::mux::UsbMuxHandle, String> {
 }
 
 async fn open_lockdown(handle: &netmuxd::usb::mux::UsbMuxHandle) -> Result<LockdownClient, String> {
-    log_line("Connecting virtual TCP to lockdownd port 62078…");
+    log_line("Connecting virtual TCP to lockdownd port 62078...");
     let stream = handle
         .connect(LockdownClient::LOCKDOWND_PORT)
         .await
@@ -152,7 +158,7 @@ async fn read_lockdown_values() -> Result<(), String> {
     let handle = open_mux_handle().await?;
     let mut lockdown = open_lockdown(&handle).await?;
 
-    log_line("Calling lockdown.get_value(None, None)…");
+    log_line("Calling lockdown.get_value(None, None)...");
     let value = lockdown
         .get_value(None, None)
         .await
@@ -178,7 +184,7 @@ async fn pair_device() -> Result<(), String> {
         "Generated host_id={host_id} system_buid={system_buid}"
     ));
 
-    log_line("Calling lockdown.pair() — accept the trust prompt on the device…");
+    log_line("Calling lockdown.pair() - accept the trust prompt on the device...");
     let pairing_file = lockdown
         .pair(host_id, system_buid, None)
         .await
@@ -201,6 +207,284 @@ async fn pair_device() -> Result<(), String> {
     Ok(())
 }
 
+/// Open lockdown, run TLS, ask it to start `service_name`, then return a
+/// `Box<dyn ReadWrite>` already on the new port (with TLS up if the device
+/// requested it). Used by the CoreDeviceProxy/app-service flow.
+async fn start_service_stream(
+    handle: &netmuxd::usb::mux::UsbMuxHandle,
+    pairing_file: &PairingFile,
+    service_name: &str,
+) -> Result<Box<dyn ReadWrite>, String> {
+    let mut lockdown = open_lockdown(handle).await?;
+    log_line("lockdown.start_session() (TLS)...");
+    lockdown
+        .start_session(pairing_file)
+        .await
+        .map_err(|e| format!("start_session: {e:?}"))?;
+
+    log_line(&format!("lockdown.start_service({service_name})"));
+    let (port, ssl) = lockdown
+        .start_service(service_name)
+        .await
+        .map_err(|e| format!("start_service: {e:?}"))?;
+    log_line(&format!("  -> port={port} ssl={ssl}"));
+
+    let stream = handle
+        .connect(port)
+        .await
+        .map_err(|e| format!("mux connect to service port: {e}"))?;
+    let mut idevice = Idevice::new(Box::new(stream), "netmuxd-wasm-test");
+    if ssl {
+        idevice
+            .start_session(pairing_file, false)
+            .await
+            .map_err(|e| format!("service start_session: {e:?}"))?;
+    }
+    idevice
+        .get_socket()
+        .ok_or_else(|| "service idevice missing socket after session".to_string())
+}
+
+async fn list_apps() -> Result<(), String> {
+    let pairing_file = load_pairing_file()?;
+    log_line(&format!(
+        "Loaded pairing file (host_id={})",
+        pairing_file.host_id
+    ));
+
+    let mux = open_mux_handle().await?;
+
+    let socket = start_service_stream(
+        &mux,
+        &pairing_file,
+        "com.apple.internal.devicecompute.CoreDeviceProxy",
+    )
+    .await?;
+
+    log_line("CoreDeviceProxy CDTunnel handshake...");
+    let idevice = Idevice::new(socket, "netmuxd-wasm-test");
+    let proxy = CoreDeviceProxy::new(idevice)
+        .await
+        .map_err(|e| format!("CoreDeviceProxy::new: {e:?}"))?;
+
+    let info = proxy.tunnel_info().clone();
+    log_line(&format!(
+        "Tunnel up: client={} server={} mtu={} rsd_port={}",
+        info.client_address, info.server_address, info.mtu, info.server_rsd_port,
+    ));
+
+    log_line("Spinning up jktcp software TCP tunnel...");
+    let adapter = proxy
+        .create_software_tunnel()
+        .map_err(|e| format!("create_software_tunnel: {e:?}"))?;
+    let mut tcp = adapter.to_async_handle();
+
+    log_line(&format!(
+        "Connecting to RSD on port {}...",
+        info.server_rsd_port
+    ));
+    let rsd_stream = tcp
+        .connect(info.server_rsd_port)
+        .await
+        .map_err(|e| format!("tcp connect rsd: {e}"))?;
+
+    log_line("RSD handshake...");
+    let handshake = RsdHandshake::new(rsd_stream)
+        .await
+        .map_err(|e| format!("RsdHandshake: {e:?}"))?;
+    log_line(&format!(
+        "RSD up: protocol={} uuid={} services={}",
+        handshake.protocol_version,
+        handshake.uuid,
+        handshake.services.len(),
+    ));
+
+    let appservice = handshake
+        .services
+        .get("com.apple.coredevice.appservice")
+        .ok_or_else(|| "RSD did not advertise com.apple.coredevice.appservice".to_string())?;
+    log_line(&format!(
+        "AppService advertised on port {}",
+        appservice.port,
+    ));
+
+    let app_stream: Box<dyn ReadWrite> = Box::new(
+        tcp.connect(appservice.port)
+            .await
+            .map_err(|e| format!("tcp connect appservice: {e}"))?,
+    );
+    let mut app = AppServiceClient::new(app_stream)
+        .await
+        .map_err(|e| format!("AppServiceClient::new: {e:?}"))?;
+
+    log_line("Calling list_apps(includeAll=true)...");
+    let apps = app
+        .list_apps(true, true, true, true, true)
+        .await
+        .map_err(|e| format!("list_apps: {e:?}"))?;
+
+    log_line(&format!("{} apps:", apps.len()));
+    let mut buf = String::new();
+    for a in &apps {
+        buf.push_str(&format!(
+            "  {:<45}  {}{}\n",
+            a.bundle_identifier,
+            a.name,
+            if a.is_first_party { "  [system]" } else { "" },
+        ));
+    }
+    render_block(&buf);
+
+    Ok(())
+}
+
+/// Mirror of `tools/src/rppairing.rs::pair_via_usb`, but driven from the
+/// browser: stops at `RpPairingFile::to_bytes()` and stashes the result in
+/// `localStorage` instead of touching the filesystem.
+async fn rp_pair() -> Result<(), String> {
+    let pairing_file = load_pairing_file()?;
+    log_line(&format!(
+        "Loaded usbmuxd pairing file (host_id={})",
+        pairing_file.host_id
+    ));
+
+    let mux = open_mux_handle().await?;
+
+    // Same setup as list_apps: lockdown -> start CoreDeviceProxy -> CDTunnel ->
+    // jktcp software tunnel -> RSD handshake.
+    let socket = start_service_stream(
+        &mux,
+        &pairing_file,
+        "com.apple.internal.devicecompute.CoreDeviceProxy",
+    )
+    .await?;
+
+    log_line("CoreDeviceProxy CDTunnel handshake...");
+    let idevice = Idevice::new(socket, "netmuxd-wasm-test");
+    let proxy = CoreDeviceProxy::new(idevice)
+        .await
+        .map_err(|e| format!("CoreDeviceProxy::new: {e:?}"))?;
+    let info = proxy.tunnel_info().clone();
+    log_line(&format!("RSD on port {}", info.server_rsd_port));
+
+    log_line("Spinning up jktcp software TCP tunnel...");
+    let adapter = proxy
+        .create_software_tunnel()
+        .map_err(|e| format!("create_software_tunnel: {e:?}"))?;
+    let mut tcp = adapter.to_async_handle();
+
+    let rsd_stream = tcp
+        .connect(info.server_rsd_port)
+        .await
+        .map_err(|e| format!("tcp connect rsd: {e}"))?;
+    log_line("RSD handshake...");
+    let handshake = RsdHandshake::new(rsd_stream)
+        .await
+        .map_err(|e| format!("RsdHandshake: {e:?}"))?;
+    log_line(&format!(
+        "RSD up: {} services advertised",
+        handshake.services.len()
+    ));
+
+    let ts = handshake
+        .services
+        .get("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+        .ok_or_else(|| "untrusted tunnel service not advertised".to_string())?;
+    log_line(&format!("Untrusted tunnel service on port {}", ts.port));
+
+    let ts_stream = tcp
+        .connect(ts.port)
+        .await
+        .map_err(|e| format!("tcp connect tunnelservice: {e}"))?;
+
+    log_line("RemoteXPC handshake...");
+    let mut conn = RemoteXpcClient::new(ts_stream)
+        .await
+        .map_err(|e| format!("RemoteXpcClient::new: {e:?}"))?;
+    conn.do_handshake()
+        .await
+        .map_err(|e| format!("RemoteXpc do_handshake: {e:?}"))?;
+    let _ = conn.recv_root().await;
+
+    log_line("Starting RPPairing - confirm trust + enter the PIN shown on the device.");
+    let mut rpf = RpPairingFile::generate(RP_HOSTNAME);
+    let mut rpc = RemotePairingClient::new(conn, RP_HOSTNAME, &mut rpf);
+
+    rpc.connect(
+        async |_state: ()| {
+            let win = match web_sys::window() {
+                Some(w) => w,
+                None => return String::new(),
+            };
+            match win.prompt_with_message("Enter the 6-digit PIN shown on the device") {
+                Ok(Some(s)) => s.trim().to_string(),
+                _ => String::new(),
+            }
+        },
+        (),
+    )
+    .await
+    .map_err(|e| format!("RemotePairingClient::connect: {e:?}"))?;
+
+    let bytes = rpf.to_bytes();
+    let xml = String::from_utf8(bytes).map_err(|e| format!("rp pairing utf8: {e:?}"))?;
+    save_rp_pairing_xml(&xml)?;
+    log_line(&format!(
+        "RPPaired! Saved {} bytes to localStorage[{}]:",
+        xml.len(),
+        RP_PAIRING_STORAGE_KEY
+    ));
+    render_block(&xml);
+
+    Ok(())
+}
+
+fn save_rp_pairing_xml(xml: &str) -> Result<(), String> {
+    local_storage()?
+        .set_item(RP_PAIRING_STORAGE_KEY, xml)
+        .map_err(|e| format!("localStorage.setItem: {e:?}"))
+}
+
+fn load_rp_pairing_xml() -> Result<Option<String>, String> {
+    local_storage()?
+        .get_item(RP_PAIRING_STORAGE_KEY)
+        .map_err(|e| format!("localStorage.getItem: {e:?}"))
+}
+
+fn download_rp_pairing() -> Result<(), String> {
+    let xml = load_rp_pairing_xml()?
+        .ok_or_else(|| "no RPPairing file in localStorage to download".to_string())?;
+
+    let parts = js_sys::Array::new();
+    parts.push(&JsValue::from_str(&xml));
+    let options = BlobPropertyBag::new();
+    options.set_type("application/x-plist");
+    let blob = Blob::new_with_str_sequence_and_options(&parts, &options)
+        .map_err(|e| format!("Blob::new: {e:?}"))?;
+    let url =
+        Url::create_object_url_with_blob(&blob).map_err(|e| format!("createObjectURL: {e:?}"))?;
+
+    let doc = document();
+    let a: HtmlAnchorElement = doc
+        .create_element("a")
+        .map_err(|e| format!("create_element: {e:?}"))?
+        .dyn_into()
+        .map_err(|_| "anchor cast failed".to_string())?;
+    a.set_href(&url);
+    a.set_download("rp_pairing.plist");
+    a.set_attribute("style", "display:none").ok();
+    doc.body().unwrap().append_child(&a).ok();
+    a.click();
+    a.remove();
+    Url::revoke_object_url(&url).ok();
+
+    log_line(&format!(
+        "Downloaded rp_pairing.plist ({} bytes).",
+        xml.len()
+    ));
+    Ok(())
+}
+
 async fn tls_test() -> Result<(), String> {
     let pairing_file = load_pairing_file()?;
     log_line(&format!(
@@ -211,12 +495,12 @@ async fn tls_test() -> Result<(), String> {
     let handle = open_mux_handle().await?;
     let mut lockdown = open_lockdown(&handle).await?;
 
-    log_line("Calling lockdown.start_session() — runs the rustls-rustcrypto handshake…");
+    log_line("Calling lockdown.start_session() - runs the rustls-rustcrypto handshake...");
     lockdown
         .start_session(&pairing_file)
         .await
         .map_err(|e| format!("start_session: {e:?}"))?;
-    log_line("TLS session up. Fetching get_value(None, None) — should include protected keys.");
+    log_line("TLS session up. Fetching get_value(None, None) - should include protected keys.");
 
     let value = lockdown
         .get_value(None, None)
@@ -241,8 +525,8 @@ fn download_pairing() -> Result<(), String> {
     options.set_type("application/x-plist");
     let blob = Blob::new_with_str_sequence_and_options(&parts, &options)
         .map_err(|e| format!("Blob::new: {e:?}"))?;
-    let url = Url::create_object_url_with_blob(&blob)
-        .map_err(|e| format!("createObjectURL: {e:?}"))?;
+    let url =
+        Url::create_object_url_with_blob(&blob).map_err(|e| format!("createObjectURL: {e:?}"))?;
 
     let doc = document();
     let a: HtmlAnchorElement = doc
@@ -339,16 +623,17 @@ fn main() {
     let btn_read = mk_btn("Read lockdown values");
     let btn_pair = mk_btn("Pair");
     let btn_tls = mk_btn("TLS test (stored pairing)");
+    let btn_apps = mk_btn("List apps (CoreDeviceProxy)");
+    let btn_rp_pair = mk_btn("rppair");
+    let btn_rp_download = mk_btn("Download RP pairing");
     let btn_download = mk_btn("Download pairing");
 
     // Hidden file input + visible button to trigger it.
-    let upload_input: HtmlInputElement = doc
-        .create_element("input")
-        .unwrap()
-        .dyn_into()
-        .unwrap();
+    let upload_input: HtmlInputElement = doc.create_element("input").unwrap().dyn_into().unwrap();
     upload_input.set_type("file");
-    upload_input.set_attribute("accept", ".plist,application/x-plist,text/xml").ok();
+    upload_input
+        .set_attribute("accept", ".plist,application/x-plist,text/xml")
+        .ok();
     upload_input.set_attribute("style", "display:none").ok();
     body.append_child(&upload_input).unwrap();
     install_upload_handler(&upload_input);
@@ -412,6 +697,34 @@ fn main() {
     });
     btn_tls.set_onclick(Some(cb_tls.as_ref().unchecked_ref()));
     cb_tls.forget();
+
+    let cb_apps = Closure::<dyn FnMut()>::new(move || {
+        spawn_local(async move {
+            if let Err(e) = list_apps().await {
+                log_line(&format!("ERROR: {e}"));
+            }
+        });
+    });
+    btn_apps.set_onclick(Some(cb_apps.as_ref().unchecked_ref()));
+    cb_apps.forget();
+
+    let cb_rp_pair = Closure::<dyn FnMut()>::new(move || {
+        spawn_local(async move {
+            if let Err(e) = rp_pair().await {
+                log_line(&format!("ERROR: {e}"));
+            }
+        });
+    });
+    btn_rp_pair.set_onclick(Some(cb_rp_pair.as_ref().unchecked_ref()));
+    cb_rp_pair.forget();
+
+    let cb_rp_download = Closure::<dyn FnMut()>::new(move || {
+        if let Err(e) = download_rp_pairing() {
+            log_line(&format!("ERROR: {e}"));
+        }
+    });
+    btn_rp_download.set_onclick(Some(cb_rp_download.as_ref().unchecked_ref()));
+    cb_rp_download.forget();
 
     let cb_download = Closure::<dyn FnMut()>::new(move || {
         if let Err(e) = download_pairing() {

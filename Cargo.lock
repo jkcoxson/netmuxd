@@ -1161,7 +1161,7 @@ dependencies = [
 [[package]]
 name = "nusb"
 version = "0.2.3"
-source = "git+https://github.com/jkcoxson/nusb?branch=webusb#8f1c638ccdaf84253f1cbd676fa2a56d79f5bf9d"
+source = "git+https://github.com/jkcoxson/nusb?branch=webusb#13800decd9451e54cc9b46906b83b74eab83879e"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",

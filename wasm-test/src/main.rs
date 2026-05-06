@@ -18,8 +18,12 @@ use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
 use idevice::services::core_device::AppServiceClient;
 use idevice::services::core_device_proxy::CoreDeviceProxy;
 use idevice::services::rsd::RsdHandshake;
-use idevice::{Idevice, ReadWrite, RemoteXpcClient, services::lockdown::LockdownClient};
+use idevice::{
+    Idevice, IdeviceService, ReadWrite, RemoteXpcClient, RsdService,
+    services::lockdown::LockdownClient,
+};
 use netmuxd::usb::apple::{self, APPLE_VID};
+use netmuxd::usb::provider::UsbMuxProvider;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -207,66 +211,26 @@ async fn pair_device() -> Result<(), String> {
     Ok(())
 }
 
-/// Open lockdown, run TLS, ask it to start `service_name`, then return a
-/// `Box<dyn ReadWrite>` already on the new port (with TLS up if the device
-/// requested it). Used by the CoreDeviceProxy/app-service flow.
-async fn start_service_stream(
-    handle: &netmuxd::usb::mux::UsbMuxHandle,
-    pairing_file: &PairingFile,
-    service_name: &str,
-) -> Result<Box<dyn ReadWrite>, String> {
-    let mut lockdown = open_lockdown(handle).await?;
-    log_line("lockdown.start_session() (TLS)...");
-    lockdown
-        .start_session(pairing_file)
-        .await
-        .map_err(|e| format!("start_session: {e:?}"))?;
-
-    log_line(&format!("lockdown.start_service({service_name})"));
-    let (port, ssl) = lockdown
-        .start_service(service_name)
-        .await
-        .map_err(|e| format!("start_service: {e:?}"))?;
-    log_line(&format!("  -> port={port} ssl={ssl}"));
-
-    let stream = handle
-        .connect(port)
-        .await
-        .map_err(|e| format!("mux connect to service port: {e}"))?;
-    let mut idevice = Idevice::new(Box::new(stream), "netmuxd-wasm-test");
-    if ssl {
-        idevice
-            .start_session(pairing_file, false)
-            .await
-            .map_err(|e| format!("service start_session: {e:?}"))?;
-    }
-    idevice
-        .get_socket()
-        .ok_or_else(|| "service idevice missing socket after session".to_string())
-}
-
-async fn list_apps() -> Result<(), String> {
+async fn build_provider() -> Result<UsbMuxProvider, String> {
     let pairing_file = load_pairing_file()?;
     log_line(&format!(
         "Loaded pairing file (host_id={})",
         pairing_file.host_id
     ));
-
     let mux = open_mux_handle().await?;
+    Ok(UsbMuxProvider::new(mux, pairing_file, "netmuxd-wasm-test"))
+}
 
-    let socket = start_service_stream(
-        &mux,
-        &pairing_file,
-        "com.apple.internal.devicecompute.CoreDeviceProxy",
-    )
-    .await?;
-
-    log_line("CoreDeviceProxy CDTunnel handshake...");
-    let idevice = Idevice::new(socket, "netmuxd-wasm-test");
-    let proxy = CoreDeviceProxy::new(idevice)
+/// Bring up a [`CoreDeviceProxy`] via the provider, run the CDTunnel /
+/// software-TCP / RSD-handshake stack, and return the pieces shared between
+/// the list-apps and rp-pair flows.
+async fn rsd_handle_via_provider(
+    provider: &UsbMuxProvider,
+) -> Result<(idevice::tcp::handle::AdapterHandle, RsdHandshake), String> {
+    log_line("CoreDeviceProxy::connect(provider)...");
+    let proxy = CoreDeviceProxy::connect(provider)
         .await
-        .map_err(|e| format!("CoreDeviceProxy::new: {e:?}"))?;
-
+        .map_err(|e| format!("CoreDeviceProxy::connect: {e:?}"))?;
     let info = proxy.tunnel_info().clone();
     log_line(&format!(
         "Tunnel up: client={} server={} mtu={} rsd_port={}",
@@ -279,15 +243,10 @@ async fn list_apps() -> Result<(), String> {
         .map_err(|e| format!("create_software_tunnel: {e:?}"))?;
     let mut tcp = adapter.to_async_handle();
 
-    log_line(&format!(
-        "Connecting to RSD on port {}...",
-        info.server_rsd_port
-    ));
     let rsd_stream = tcp
         .connect(info.server_rsd_port)
         .await
         .map_err(|e| format!("tcp connect rsd: {e}"))?;
-
     log_line("RSD handshake...");
     let handshake = RsdHandshake::new(rsd_stream)
         .await
@@ -299,23 +258,18 @@ async fn list_apps() -> Result<(), String> {
         handshake.services.len(),
     ));
 
-    let appservice = handshake
-        .services
-        .get("com.apple.coredevice.appservice")
-        .ok_or_else(|| "RSD did not advertise com.apple.coredevice.appservice".to_string())?;
-    log_line(&format!(
-        "AppService advertised on port {}",
-        appservice.port,
-    ));
+    Ok((tcp, handshake))
+}
 
-    let app_stream: Box<dyn ReadWrite> = Box::new(
-        tcp.connect(appservice.port)
+async fn list_apps() -> Result<(), String> {
+    let provider = build_provider().await?;
+    let (mut tcp, mut handshake) = rsd_handle_via_provider(&provider).await?;
+
+    log_line("AppServiceClient::connect_rsd(...)");
+    let mut app: AppServiceClient<Box<dyn ReadWrite>> =
+        AppServiceClient::connect_rsd(&mut tcp, &mut handshake)
             .await
-            .map_err(|e| format!("tcp connect appservice: {e}"))?,
-    );
-    let mut app = AppServiceClient::new(app_stream)
-        .await
-        .map_err(|e| format!("AppServiceClient::new: {e:?}"))?;
+            .map_err(|e| format!("AppServiceClient::connect_rsd: {e:?}"))?;
 
     log_line("Calling list_apps(includeAll=true)...");
     let apps = app
@@ -342,49 +296,8 @@ async fn list_apps() -> Result<(), String> {
 /// browser: stops at `RpPairingFile::to_bytes()` and stashes the result in
 /// `localStorage` instead of touching the filesystem.
 async fn rp_pair() -> Result<(), String> {
-    let pairing_file = load_pairing_file()?;
-    log_line(&format!(
-        "Loaded usbmuxd pairing file (host_id={})",
-        pairing_file.host_id
-    ));
-
-    let mux = open_mux_handle().await?;
-
-    // Same setup as list_apps: lockdown -> start CoreDeviceProxy -> CDTunnel ->
-    // jktcp software tunnel -> RSD handshake.
-    let socket = start_service_stream(
-        &mux,
-        &pairing_file,
-        "com.apple.internal.devicecompute.CoreDeviceProxy",
-    )
-    .await?;
-
-    log_line("CoreDeviceProxy CDTunnel handshake...");
-    let idevice = Idevice::new(socket, "netmuxd-wasm-test");
-    let proxy = CoreDeviceProxy::new(idevice)
-        .await
-        .map_err(|e| format!("CoreDeviceProxy::new: {e:?}"))?;
-    let info = proxy.tunnel_info().clone();
-    log_line(&format!("RSD on port {}", info.server_rsd_port));
-
-    log_line("Spinning up jktcp software TCP tunnel...");
-    let adapter = proxy
-        .create_software_tunnel()
-        .map_err(|e| format!("create_software_tunnel: {e:?}"))?;
-    let mut tcp = adapter.to_async_handle();
-
-    let rsd_stream = tcp
-        .connect(info.server_rsd_port)
-        .await
-        .map_err(|e| format!("tcp connect rsd: {e}"))?;
-    log_line("RSD handshake...");
-    let handshake = RsdHandshake::new(rsd_stream)
-        .await
-        .map_err(|e| format!("RsdHandshake: {e:?}"))?;
-    log_line(&format!(
-        "RSD up: {} services advertised",
-        handshake.services.len()
-    ));
+    let provider = build_provider().await?;
+    let (mut tcp, handshake) = rsd_handle_via_provider(&provider).await?;
 
     let ts = handshake
         .services

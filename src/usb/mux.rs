@@ -53,7 +53,7 @@ mod tcp_flags {
 
 /// Handle held by the device-discovery layer to talk to a per-device
 /// mux task.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UsbMuxHandle {
     cmd: mpsc::Sender<Command>,
 }

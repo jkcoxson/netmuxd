@@ -125,14 +125,33 @@ impl Device {
     }
 
     /// Split off async pipe wrappers for the given bulk endpoints.
-    /// `ep_in`/`ep_out` are USB endpoint addresses (high bit set for
-    /// IN). The returned reader/writer share ownership of the
-    /// underlying handle via `Arc`, so they can outlive this `Device`
-    pub fn pipes(&self, ep_in: u8, ep_out: u8) -> (LibusbkReader, LibusbkWriter) {
+    pub fn pipes(
+        &self,
+        ep_in: u8,
+        ep_out: u8,
+        ep_out_max_packet: u16,
+    ) -> (LibusbkReader, LibusbkWriter) {
         (
             LibusbkReader::new(self.handle.clone(), ep_in),
-            LibusbkWriter::new(self.handle.clone(), ep_out),
+            LibusbkWriter::new(self.handle.clone(), ep_out, ep_out_max_packet),
         )
+    }
+
+    pub fn set_short_packet_terminate(&self, pipe_id: u8, enable: bool) -> io::Result<()> {
+        let value: u8 = if enable { 1 } else { 0 };
+        let ok = unsafe {
+            ffi::UsbK_SetPipePolicy(
+                self.handle.raw,
+                pipe_id,
+                ffi::SHORT_PACKET_TERMINATE,
+                std::mem::size_of::<u8>() as u32,
+                &value as *const u8 as *const std::ffi::c_void,
+            )
+        };
+        if ok == ffi::FALSE {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 

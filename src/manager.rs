@@ -70,6 +70,7 @@ pub enum ListenerEvent {
 #[derive(Clone)]
 pub struct DeviceConnection {
     pub connection_type: String,
+    pub serial_number: String,
     pub network_address: Option<IpAddr>,
     pub usb: Option<UsbMuxHandle>,
 }
@@ -299,6 +300,7 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
                 ManagerRequestType::GetDeviceConnection { id, response } => {
                     let lookup = devices.get(&id).map(|d| DeviceConnection {
                         connection_type: d.connection_type.clone(),
+                        serial_number: d.serial_number.clone(),
                         network_address: d.network_address,
                         usb: usb_handles.get(&id).cloned(),
                     });

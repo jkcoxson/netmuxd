@@ -175,7 +175,17 @@ unsafe extern "system" {
     pub fn UsbK_ResetPipe(InterfaceHandle: KUSB_HANDLE, PipeID: UCHAR) -> BOOL;
     pub fn UsbK_AbortPipe(InterfaceHandle: KUSB_HANDLE, PipeID: UCHAR) -> BOOL;
     pub fn UsbK_FlushPipe(InterfaceHandle: KUSB_HANDLE, PipeID: UCHAR) -> BOOL;
+
+    pub fn UsbK_SetPipePolicy(
+        InterfaceHandle: KUSB_HANDLE,
+        PipeID: UCHAR,
+        PolicyType: UINT,
+        ValueLength: UINT,
+        Value: *const c_void,
+    ) -> BOOL;
 }
+
+pub const SHORT_PACKET_TERMINATE: UINT = 0x01;
 
 // Layout sanity checks. KUSB_SETUP_PACKET is documented as 8 bytes; if
 // our packed mirror drifts we want a build-time error, not a runtime

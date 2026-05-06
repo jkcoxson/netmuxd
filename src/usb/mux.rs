@@ -7,7 +7,7 @@
 // different services on the device. Each Connect from a client maps
 // to a virtual TCP connection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 
 use log::{debug, info, trace, warn};
@@ -106,6 +106,10 @@ struct Connection {
     /// Our internal half of the duplex pair. Reader half lives in a
     /// pump task that forwards bytes onto the data channel.
     write_half: Option<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+    /// User bytes waiting on device-side TCP window space. Flushed in
+    /// chunks bounded by `MAX_PAYLOAD` and the device's advertised
+    /// window each time `rx_ack`/`rx_win` move.
+    pending_tx: VecDeque<u8>,
 }
 
 #[derive(PartialEq)]
@@ -221,6 +225,7 @@ where
                             rx_win: 0,
                             connect_reply: Some(reply),
                             write_half: None,
+                            pending_tx: VecDeque::new(),
                         };
                         if let Err(e) = send_tcp(&mut writer, &mut state, &conn, tcp_flags::SYN, &[]).await {
                             let _ = conn.connect_reply.take().unwrap().send(Err(e));
@@ -242,13 +247,14 @@ where
                 }
                 match payload {
                     Some(bytes) => {
-                        if let Err(e) = send_tcp(&mut writer, &mut state, conn, tcp_flags::ACK, &bytes).await {
+                        conn.pending_tx.extend(bytes);
+                        if let Err(e) =
+                            flush_pending(&mut writer, &mut state, conn).await
+                        {
                             warn!("dev={device_id} send_tcp failed for sport={sport}: {e:?}");
                             teardown(&mut connections, sport);
                             continue;
                         }
-                        let conn = connections.get_mut(&sport).unwrap();
-                        conn.tx_seq = conn.tx_seq.wrapping_add(bytes.len() as u32);
                     }
                     None => {
                         // User closed: send RST and clean up.
@@ -350,6 +356,7 @@ where
                         rx_win: 0,
                         connect_reply: None,
                         write_half: None,
+                        pending_tx: VecDeque::new(),
                     };
                     let _ = send_tcp(writer, state, &anon, tcp_flags::RST, &[]).await;
                 }
@@ -413,22 +420,29 @@ where
                 if th.flags & tcp_flags::RST != 0 {
                     info!("dev={device_id} sport={our_sport} dport={our_dport} reset by device");
                     teardown(connections, our_sport);
-                } else if !payload.is_empty() {
-                    // Forward to user.
-                    let len = payload.len() as u32;
-                    if let Some(w) = conn.write_half.as_mut()
-                        && let Err(e) = w.write_all(payload).await
-                    {
-                        warn!("dev={device_id} sport={our_sport} user-side write failed: {e:?}");
-                        let _ = send_tcp(writer, state, conn, tcp_flags::RST, &[]).await;
-                        teardown(connections, our_sport);
-                        return Ok(());
-                    }
+                } else {
+                    if !payload.is_empty() {
+                        // Forward to user.
+                        let len = payload.len() as u32;
+                        if let Some(w) = conn.write_half.as_mut()
+                            && let Err(e) = w.write_all(payload).await
+                        {
+                            warn!(
+                                "dev={device_id} sport={our_sport} user-side write failed: {e:?}"
+                            );
+                            let _ = send_tcp(writer, state, conn, tcp_flags::RST, &[]).await;
+                            teardown(connections, our_sport);
+                            return Ok(());
+                        }
 
-                    conn.tx_ack = conn.tx_ack.wrapping_add(len);
-                    send_tcp(writer, state, conn, tcp_flags::ACK, &[]).await?;
+                        conn.tx_ack = conn.tx_ack.wrapping_add(len);
+                        send_tcp(writer, state, conn, tcp_flags::ACK, &[]).await?;
+                    }
+                    // The packet (payload-bearing or pure ACK) updated
+                    // rx_ack / rx_win — try to flush any user bytes that
+                    // were waiting on window space.
+                    flush_pending(writer, state, conn).await?;
                 }
-                // Pure ACK with no payload: nothing to do.
             }
         }
         p if p == Proto::Control as u32 => {
@@ -517,10 +531,24 @@ where
     // Read the first 8 bytes (protocol + length)
     let mut head8 = [0u8; V1_HEADER_SIZE];
     reader.read_exact(&mut head8).await?;
+    let protocol = u32::from_be_bytes(head8[0..4].try_into().unwrap());
     let length = u32::from_be_bytes(head8[4..8].try_into().unwrap()) as usize;
     if length < header_size || length > USB_MTU {
+        let mut tail = [0u8; 32];
+        let n = match tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            reader.read(&mut tail),
+        )
+        .await
+        {
+            Ok(Ok(n)) => n,
+            _ => 0,
+        };
         return Err(io::Error::other(format!(
-            "implausible mux packet length {length} (header_size={header_size})"
+            "implausible mux packet length {length} (header_size={header_size}, \
+             protocol={protocol:#010x}, head={:02x?}, next_{n}={:02x?})",
+            head8,
+            &tail[..n],
         )));
     }
     let mut pkt = vec![0u8; length];
@@ -529,7 +557,7 @@ where
         reader.read_exact(&mut pkt[V1_HEADER_SIZE..]).await?;
     }
     if state.version >= 2 {
-        state.rx_seq = u16::from_be_bytes(pkt[14..16].try_into().unwrap());
+        state.rx_seq = u16::from_be_bytes(pkt[12..14].try_into().unwrap());
     }
     trace!(
         "read mux pkt: len={length} version={} header_size={header_size}",
@@ -553,6 +581,31 @@ where
     payload[0..4].copy_from_slice(&major.to_be_bytes());
     payload[4..8].copy_from_slice(&minor.to_be_bytes());
     send_raw(writer, state, Proto::Version, &payload, &[], false).await
+}
+
+async fn flush_pending<W>(
+    writer: &mut W,
+    state: &mut MuxState,
+    conn: &mut Connection,
+) -> io::Result<()>
+where
+    W: AsyncWrite + Send + Unpin,
+{
+    while !conn.pending_tx.is_empty() {
+        let inflight = conn.tx_seq.wrapping_sub(conn.rx_ack);
+        if inflight >= conn.rx_win {
+            break;
+        }
+        let available = (conn.rx_win - inflight) as usize;
+        let chunk_len = conn.pending_tx.len().min(MAX_PAYLOAD).min(available);
+        if chunk_len == 0 {
+            break;
+        }
+        let chunk: Vec<u8> = conn.pending_tx.drain(..chunk_len).collect();
+        send_tcp(writer, state, conn, tcp_flags::ACK, &chunk).await?;
+        conn.tx_seq = conn.tx_seq.wrapping_add(chunk_len as u32);
+    }
+    Ok(())
 }
 
 async fn send_tcp<W>(

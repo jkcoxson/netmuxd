@@ -137,6 +137,7 @@ impl Drop for LibusbkReader {
 pub struct LibusbkWriter {
     handle: Arc<DeviceHandle>,
     pipe_id: u8,
+    max_packet: u16,
     /// In-flight blocking WritePipe, if any.
     pending: Option<JoinHandle<io::Result<usize>>>,
     /// Number of bytes the caller submitted for the in-flight write.
@@ -147,10 +148,11 @@ pub struct LibusbkWriter {
 }
 
 impl LibusbkWriter {
-    pub(crate) fn new(handle: Arc<DeviceHandle>, pipe_id: u8) -> Self {
+    pub(crate) fn new(handle: Arc<DeviceHandle>, pipe_id: u8, max_packet: u16) -> Self {
         Self {
             handle,
             pipe_id,
+            max_packet,
             pending: None,
             pending_len: 0,
         }
@@ -159,6 +161,7 @@ impl LibusbkWriter {
     fn spawn_write(&self, bytes: Vec<u8>) -> JoinHandle<io::Result<usize>> {
         let handle = self.handle.clone();
         let pipe_id = self.pipe_id;
+        let mps = self.max_packet as usize;
         tokio::task::spawn_blocking(move || -> io::Result<usize> {
             let mut transferred: u32 = 0;
             let ok = unsafe {
@@ -174,6 +177,31 @@ impl LibusbkWriter {
             if ok == ffi::FALSE {
                 return Err(io::Error::last_os_error());
             }
+
+            // If the transfer was an exact multiple of MPS, the device
+            // can't tell where it ends and the next one begins. Send a
+            // zero-length packet so the next write starts a fresh USB
+            // transfer. Pass a non-null pointer to a stack byte even
+            // though length=0 — some libusbK builds reject a NULL buffer
+            // pointer regardless of length.
+            if mps > 0 && !bytes.is_empty() && bytes.len() % mps == 0 {
+                let dummy: u8 = 0;
+                let mut zlp_transferred: u32 = 0;
+                let ok = unsafe {
+                    ffi::UsbK_WritePipe(
+                        handle.raw(),
+                        pipe_id,
+                        &dummy as *const u8,
+                        0,
+                        &mut zlp_transferred,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if ok == ffi::FALSE {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+
             Ok(transferred as usize)
         })
     }

@@ -198,8 +198,19 @@ async fn handle_connected(
         }
     };
 
+    if let Err(e) = device.set_short_packet_terminate(target.ep_out, true) {
+        warn!(
+            "libusbK: SetPipePolicy(SHORT_PACKET_TERMINATE) on ep {:#04x} failed: {e}",
+            target.ep_out
+        );
+    }
+    debug!(
+        "libusbK: bulk-OUT ep {:#04x} max_packet={}",
+        target.ep_out, target.ep_out_max_packet
+    );
+
     let (reader, writer): (LibusbkReader, LibusbkWriter) =
-        device.pipes(target.ep_in, target.ep_out);
+        device.pipes(target.ep_in, target.ep_out, target.ep_out_max_packet);
     drop(device); // Reader/writer hold their own Arcs to the handle.
 
     let raw_udid = match serial.clone() {
@@ -305,6 +316,7 @@ struct MuxTarget {
     interface_number: u8,
     ep_in: u8,
     ep_out: u8,
+    ep_out_max_packet: u16,
 }
 
 fn find_mux_target(device: &Device) -> io::Result<Option<MuxTarget>> {
@@ -355,11 +367,11 @@ fn scan_config_blob(blob: &[u8], cfg_value: u8) -> Option<MuxTarget> {
     let mut intf_num: Option<u8> = None;
     let mut matches = false;
     let mut ep_in: Option<u8> = None;
-    let mut ep_out: Option<u8> = None;
+    let mut ep_out: Option<(u8, u16)> = None;
 
     let finalize =
-        |intf_num: Option<u8>, ep_in: Option<u8>, ep_out: Option<u8>| -> Option<MuxTarget> {
-            let (Some(num), Some(i), Some(o)) = (intf_num, ep_in, ep_out) else {
+        |intf_num: Option<u8>, ep_in: Option<u8>, ep_out: Option<(u8, u16)>| -> Option<MuxTarget> {
+            let (Some(num), Some(i), Some((o, mps))) = (intf_num, ep_in, ep_out) else {
                 return None;
             };
             Some(MuxTarget {
@@ -367,6 +379,7 @@ fn scan_config_blob(blob: &[u8], cfg_value: u8) -> Option<MuxTarget> {
                 interface_number: num,
                 ep_in: i,
                 ep_out: o,
+                ep_out_max_packet: mps,
             })
         };
 
@@ -402,11 +415,12 @@ fn scan_config_blob(blob: &[u8], cfg_value: u8) -> Option<MuxTarget> {
                 if matches && len >= 7 {
                     let addr = desc[2];
                     let attrs = desc[3];
+                    let mps = u16::from_le_bytes([desc[4], desc[5]]) & 0x07FF;
                     if attrs & ENDPOINT_TYPE_MASK == ENDPOINT_TYPE_BULK {
                         if addr & ENDPOINT_DIR_IN != 0 {
                             ep_in = Some(addr);
                         } else {
-                            ep_out = Some(addr);
+                            ep_out = Some((addr, mps));
                         }
                     }
                 }

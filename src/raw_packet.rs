@@ -1,6 +1,6 @@
 // jkcoxson
 
-use log::{trace, warn};
+use log::{debug, trace, warn};
 
 #[derive(Debug)]
 pub struct RawPacket {
@@ -75,7 +75,11 @@ impl TryFrom<&[u8]> for RawPacket {
 
         // Determine if we have enough data to parse
         if packet.len() < packet_size as usize {
-            warn!("Not enough data to parse a raw packet body");
+            warn!(
+                "Not enough data to parse a raw packet body - packet size is {}, expected {packet_size}",
+                packet.len()
+            );
+            debug!("Incomplete packet: {:?}", String::from_utf8_lossy(packet));
             return Err(());
         }
 

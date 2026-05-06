@@ -144,50 +144,39 @@ async fn handle_stream(
     pairing_file_finder: PairingFileFinder,
 ) {
     tokio::spawn(async move {
+        // 16 MiB cap on a single packet to avoid unbounded allocations from a
+        // misbehaving client. usbmuxd packets are normally a few KiB.
+        const MAX_PACKET_SIZE: usize = 16 * 1024 * 1024;
+
         loop {
-            // Wait for a message from the client
-            let mut buf = [0; 1024];
             trace!("Waiting for data from client...");
-            let size = match socket.read(&mut buf).await {
-                Ok(s) => s,
-                Err(_) => {
-                    return;
-                }
-            };
-            trace!("Recv'd {size} bytes");
-            if size == 0 {
+            // Read the 16-byte header (size, version, message, tag).
+            let mut header = [0u8; 16];
+            if let Err(e) = socket.read_exact(&mut header).await {
+                trace!("Header read ended: {e:?}");
                 return;
             }
 
-            let buffer = &mut buf[0..size].to_vec();
-            if size == 16 {
-                info!("Only read the header, pulling more bytes");
-                // Get the number of bytes to pull
-                let packet_size = &buffer[0..4];
-                let packet_size = match packet_size.try_into() {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("Failed to read packet size: {e:?}");
-                        return;
-                    }
-                };
-                let packet_size = u32::from_le_bytes(packet_size);
-                info!("Packet size: {}", packet_size);
-                // Pull the rest of the packet
-                let mut packet = vec![0; packet_size as usize];
-                let size = match socket.read(&mut packet).await {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return;
-                    }
-                };
-                if size == 0 {
-                    info!("Size was zero");
+            let packet_size =
+                u32::from_le_bytes(header[0..4].try_into().expect("16-byte header")) as usize;
+            if packet_size < 16 || packet_size > MAX_PACKET_SIZE {
+                warn!("Bogus packet size from client: {packet_size}");
+                return;
+            }
+
+            // Pull the rest of the packet body.
+            let mut buffer = vec![0u8; packet_size];
+            buffer[..16].copy_from_slice(&header);
+            if packet_size > 16 {
+                if let Err(e) = socket.read_exact(&mut buffer[16..]).await {
+                    warn!(
+                        "Failed reading packet body ({} bytes): {e:?}",
+                        packet_size - 16
+                    );
                     return;
                 }
-                // Append the packet to the buffer
-                buffer.append(&mut packet);
             }
+            let buffer = &mut buffer;
 
             let parsed: raw_packet::RawPacket = match buffer.try_into() {
                 Ok(p) => p,
@@ -381,6 +370,93 @@ async fn handle_stream(
 
                     continue;
                 }
+                "SavePairRecord" => {
+                    let pair_record_data = match parsed.plist.get("PairRecordData") {
+                        Some(plist::Value::Data(d)) => d.clone(),
+                        _ => {
+                            warn!("SavePairRecord did not contain PairRecordData");
+                            return;
+                        }
+                    };
+
+                    let udid = match parsed.plist.get("PairRecordID") {
+                        Some(plist::Value::String(u)) => Some(u.clone()),
+                        _ => None,
+                    };
+                    let udid = match udid {
+                        Some(u) => u,
+                        None => {
+                            let device_id = match parsed.plist.get("DeviceID") {
+                                Some(plist::Value::Integer(d)) => match d.as_unsigned() {
+                                    Some(d) => d,
+                                    None => {
+                                        warn!("DeviceID is not unsigned");
+                                        return;
+                                    }
+                                },
+                                _ => {
+                                    warn!("SavePairRecord missing both PairRecordID and DeviceID");
+                                    return;
+                                }
+                            };
+                            let (tx, rx) = tokio::sync::oneshot::channel();
+                            if let Err(e) = manager_sender
+                                .send(ManagerRequest {
+                                    request_type:
+                                        manager::ManagerRequestType::GetDeviceConnection {
+                                            id: device_id,
+                                            response: tx,
+                                        },
+                                    response: None,
+                                })
+                                .await
+                            {
+                                error!("Manager thread is stopped: {e:?}");
+                                return;
+                            }
+                            match rx.await {
+                                Ok(Some(c)) => c.serial_number,
+                                Ok(None) => {
+                                    warn!("No device with id {device_id}");
+                                    return;
+                                }
+                                Err(e) => {
+                                    error!("Manager did not respond: {e:?}");
+                                    return;
+                                }
+                            }
+                        }
+                    };
+
+                    let path = std::path::PathBuf::from(pairing_file_finder.plist_storage())
+                        .join(format!("{udid}.plist"));
+                    if let Some(parent) = path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+
+                    let result_number: u32 = match tokio::fs::write(&path, &pair_record_data).await
+                    {
+                        Ok(()) => {
+                            info!("Saved pair record for {udid} to {path:?}");
+                            0
+                        }
+                        Err(e) => {
+                            warn!("Failed to write pair record {path:?}: {e:?}");
+                            1
+                        }
+                    };
+
+                    let mut p = plist::Dictionary::new();
+                    p.insert("MessageType".into(), "Result".into());
+                    p.insert("Number".into(), result_number.into());
+                    let res: Vec<u8> = RawPacket::new(p, 1, 8, parsed.tag).into();
+                    if let Err(e) = socket.write_all(&res).await {
+                        warn!("Failed to send response to client: {e:?}");
+                        return;
+                    }
+
+                    continue;
+                }
                 "ReadBUID" => {
                     let buid = match pairing_file_finder.get_buid().await {
                         Ok(b) => b,
@@ -404,13 +480,16 @@ async fn handle_stream(
                 }
                 "Connect" => {
                     let connection_port = match parsed.plist.get("PortNumber") {
-                        Some(plist::Value::Integer(p)) => match p.as_unsigned() {
-                            Some(p) => p,
-                            None => {
-                                warn!("PortNumber is not unsigned!");
+                        Some(plist::Value::Integer(p)) => {
+                            if let Some(u) = p.as_unsigned() {
+                                u as u16
+                            } else if let Some(s) = p.as_signed() {
+                                s as u16
+                            } else {
+                                warn!("PortNumber is not an integer");
                                 return;
                             }
-                        },
+                        }
                         _ => {
                             warn!("Packet didn't contain PortNumber");
                             return;
@@ -431,7 +510,6 @@ async fn handle_stream(
                         }
                     };
 
-                    let connection_port = connection_port as u16;
                     let connection_port = connection_port.to_be();
 
                     info!("Client is establishing connection to port {connection_port}");

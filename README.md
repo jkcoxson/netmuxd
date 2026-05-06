@@ -1,31 +1,47 @@
 # netmuxd
 
-A replacement/addition to usbmuxd which is a reimplementation of Apple's usbmuxd on MacOS
+A replacement/addition to usbmuxd which is a reimplementation of Apple's
+usbmuxd on MacOS
 
-# Building
+This project used to be network-only (hence the name), but USB support was
+later added.
+
+## Building
 
 Run ``cargo build --release`` to generate binaries. They will be generated at ``target/release/netmuxd``
 
-# Usage
-You need to pair your device beforehand using another muxer like [usbmuxd](https://github.com/libimobiledevice/usbmuxd).
-For example, start usbmuxd, plug in your device and enter the passcode that pops up, stop usbmuxd, start netmuxd.
+## USB support
 
-Run with root, options can be listed with ``--help``
+netmuxd talks to iOS devices directly over USB via libusb. There is no
+dependency on a separate usbmuxd daemon: plug a device in and the daemon
+will discover it and start serving the usbmuxd protocol on its Unix
+socket / TCP port.
 
-# Extension Mode
-To use this project in extension with another muxer like usbmuxd, you can pass ``--disable-unix`` and ``--host 127.0.0.1``.
-Then before you run a program that uses a muxer set the environment variable ``USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015``.
+## Windows: install the driver
 
-## AltStore
-A common usecase for netmuxd is in use with [AltStore-Linux](https://github.com/NyaMisty/AltStore-Linux). 
-The best way to set this up for that use case is as follows:
-1. Install usbmuxd for your distribution
-2. Download netmuxd from the releases and place it somewhere permanent
-3. Install ``screen`` and open run a new screen like so ``screen -S netmuxd``
-4. Run netmuxd like ``./netmuxd --disable-unix --host 127.0.0.1``, then press control a+d to escape the screen
-5. Start a new screen for AltServer like ``screen -S altserver``
-6. Set the environment variable like ``export USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015``
-7. Run AltServer ``./AltServer-x86_64``
+Apple's stock USB driver claims the iOS interface, so libusb can't open
+it. netmuxd ships a one-shot installer that binds the libusb0 kernel
+driver to every Apple iOS device class. Run from an **admin PowerShell**
+(or admin cmd):
+
+```powershell
+.\netmuxd.exe install
+```
+
+This must be done with the device plugged in: Windows ranks Apple's
+WHQL-signed INF above netmuxd's self-signed one, so the only way to win
+is to force-bind via `UpdateDriverForPlugAndPlayDevices` with the device
+present. If iTunes / Apple Mobile Device Support is installed, uninstall
+it first and reboot. To revert, run `.\netmuxd.exe uninstall` from the
+same elevated shell.
+
+ARM64 note: Windows on ARM64 rejects libwdi's self-signed CA. Either
+turn on test signing (`bcdedit /set testsigning on`) for development, or
+ship the package with a Microsoft-attestation signature for production.
+
+## Usage
+
+Options can be listed with ``--help``
 
 ## License
 

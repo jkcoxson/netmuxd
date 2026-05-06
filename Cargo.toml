@@ -2,18 +2,29 @@
 name = "netmuxd"
 version = "0.3.2"
 edition = "2024"
+license = "LGPL-2.1-only"
+description = "A daemon for muxing iOS device interfaces"
+authors = ["Jackson Coxson"]
+documentation = "https://docs.rs/netmuxd"
+repository = "https://github.com/jkcoxson/netmuxd"
+readme = "README.md"
+keywords = ["lockdownd", "ios", "usbmuxd", "iphone"]
+categories = ["command-line-utilities", "hardware-support", "network-programming"]
+
+# `wasm-test` is a separate trunk app with its own [workspace], not part of
+# the published crate. Everything else here is build/CI metadata that has no
+# business in a downstream consumer's source tree.
+exclude = [
+  "wasm-test",
+  "Dockerfile",
+  ".dockerignore",
+  ".github",
+  "vendor-bundles",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 default-run = "netmuxd"
-
-[[bin]]
-name = "passthrough"
-path = "src/passthrough.rs"
-
-[[bin]]
-name = "add_device"
-path = "src/add_device.rs"
 
 [dependencies]
 # Wasm-safe subset always on; native pulls the rest via target deps below.

@@ -13,6 +13,8 @@
 //!   - Download / Upload pairing file: round-trip the stored PairingFile to
 //!     a `.plist` on disk.
 
+use std::cell::RefCell;
+
 use idevice::pairing_file::PairingFile;
 use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
 use idevice::services::core_device::AppServiceClient;
@@ -23,6 +25,7 @@ use idevice::{
     services::lockdown::LockdownClient,
 };
 use netmuxd::usb::apple::{self, APPLE_VID};
+use netmuxd::usb::mux::UsbMuxHandle;
 use netmuxd::usb::provider::UsbMuxProvider;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -35,6 +38,20 @@ use web_sys::{
 const PAIRING_STORAGE_KEY: &str = "pairing_file_xml";
 const RP_PAIRING_STORAGE_KEY: &str = "rp_pairing_file_xml";
 const RP_HOSTNAME: &str = "netmuxd-wasm-test";
+
+thread_local! {
+    /// Single mux handle held for the page lifetime.
+    ///
+    /// Opened eagerly in [`connect_iphone`] so Chrome wins the hotplug race
+    /// against the system `usbmuxd` on macOS. Cloning it gives each button
+    /// click its own view onto the same mux task.
+    static MUX: RefCell<Option<UsbMuxHandle>> = const { RefCell::new(None) };
+}
+
+fn get_mux() -> Result<UsbMuxHandle, String> {
+    MUX.with(|m| m.borrow().clone())
+        .ok_or_else(|| "click \"Connect iPhone\" first".to_string())
+}
 
 fn document() -> web_sys::Document {
     web_sys::window().unwrap().document().unwrap()
@@ -84,7 +101,21 @@ fn load_pairing_file() -> Result<PairingFile, String> {
     PairingFile::from_bytes(xml.as_bytes()).map_err(|e| format!("parse pairing file: {e:?}"))
 }
 
-async fn request_permission() -> Result<(), String> {
+/// Show the WebUSB picker, then immediately open the device, claim the mux
+/// interface, and spawn the usbmuxd-v2 task. The resulting `UsbMuxHandle`
+/// is stashed in [`MUX`] for the page lifetime.
+///
+/// Eager open (instead of opening on each button click) is the
+/// macOS-reliability fix: the system `usbmuxd` aggressively claims the
+/// interface on hotplug, so we want Chrome to grab it during the
+/// permission-grant window and never let go. Once Chrome holds the
+/// interface, system usbmuxd can't preempt it.
+async fn connect_iphone() -> Result<(), String> {
+    if MUX.with(|m| m.borrow().is_some()) {
+        log_line("Mux already open. Reload the page to reconnect.");
+        return Ok(());
+    }
+
     let usb = web_sys::window()
         .ok_or_else(|| "no window".to_string())?
         .navigator()
@@ -100,22 +131,13 @@ async fn request_permission() -> Result<(), String> {
         .await
         .map_err(|e| format!("requestDevice: {e:?}"))?;
     log_line("Permission granted.");
-    Ok(())
-}
 
-/// Open the WebUSB device, claim the mux interface, and spawn the
-/// usbmuxd-v2 task. Caller uses the returned `UsbMuxHandle` to open as many
-/// virtual TCP streams as it wants - keep the handle alive for the duration
-/// of all those streams.
-async fn open_mux_handle() -> Result<netmuxd::usb::mux::UsbMuxHandle, String> {
     log_line("Listing devices via nusb...");
     let info = nusb::list_devices()
         .await
         .map_err(|e| format!("list_devices: {e}"))?
         .find(apple::is_apple_mux)
-        .ok_or_else(|| {
-            "no Apple usbmuxd device permitted; click Connect iPhone first".to_string()
-        })?;
+        .ok_or_else(|| "no Apple usbmuxd device permitted".to_string())?;
 
     log_line(&format!(
         "Found {:04x}:{:04x}  {}",
@@ -139,13 +161,12 @@ async fn open_mux_handle() -> Result<netmuxd::usb::mux::UsbMuxHandle, String> {
 
     log_line("Spawning usbmuxd-v2 mux task...");
     let (exit_tx, _exit_rx) = tokio::sync::oneshot::channel();
-    Ok(netmuxd::usb::mux::spawn(
-        1,
-        serial,
-        opened.reader,
-        opened.writer,
-        exit_tx,
-    ))
+    let handle =
+        netmuxd::usb::mux::spawn(1, serial, opened.reader, opened.writer, exit_tx);
+
+    MUX.with(|m| *m.borrow_mut() = Some(handle));
+    log_line("Mux task ready. Click any of the other buttons to drive the device.");
+    Ok(())
 }
 
 async fn open_lockdown(handle: &netmuxd::usb::mux::UsbMuxHandle) -> Result<LockdownClient, String> {
@@ -159,7 +180,7 @@ async fn open_lockdown(handle: &netmuxd::usb::mux::UsbMuxHandle) -> Result<Lockd
 }
 
 async fn read_lockdown_values() -> Result<(), String> {
-    let handle = open_mux_handle().await?;
+    let handle = get_mux()?;
     let mut lockdown = open_lockdown(&handle).await?;
 
     log_line("Calling lockdown.get_value(None, None)...");
@@ -179,7 +200,7 @@ async fn read_lockdown_values() -> Result<(), String> {
 }
 
 async fn pair_device() -> Result<(), String> {
-    let handle = open_mux_handle().await?;
+    let handle = get_mux()?;
     let mut lockdown = open_lockdown(&handle).await?;
 
     let host_id = uuid::Uuid::new_v4().to_string().to_uppercase();
@@ -217,7 +238,7 @@ async fn build_provider() -> Result<UsbMuxProvider, String> {
         "Loaded pairing file (host_id={})",
         pairing_file.host_id
     ));
-    let mux = open_mux_handle().await?;
+    let mux = get_mux()?;
     Ok(UsbMuxProvider::new(mux, pairing_file, "netmuxd-wasm-test"))
 }
 
@@ -405,7 +426,7 @@ async fn tls_test() -> Result<(), String> {
         pairing_file.host_id
     ));
 
-    let handle = open_mux_handle().await?;
+    let handle = get_mux()?;
     let mut lockdown = open_lockdown(&handle).await?;
 
     log_line("Calling lockdown.start_session() - runs the rustls-rustcrypto handshake...");
@@ -573,7 +594,7 @@ fn main() {
 
     let cb_connect = Closure::<dyn FnMut()>::new(move || {
         spawn_local(async move {
-            if let Err(e) = request_permission().await {
+            if let Err(e) = connect_iphone().await {
                 log_line(&format!("ERROR: {e}"));
             }
         });

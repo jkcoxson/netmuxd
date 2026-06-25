@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -e
+
+if ! getent group netmuxd >/dev/null; then
+    addgroup --system netmuxd
+fi
+
+if ! id -u netmuxd >/dev/null 2>&1; then
+    adduser \
+        --system \
+        --no-create-home \
+        --disabled-login \
+        --ingroup netmuxd \
+        --home /nonexistent \
+        --gecos "netmuxd daemon user" \
+        netmuxd
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+
+    # Ensure usbmuxd is available for normal USB pairing workflow.
+    systemctl enable usbmuxd.service || true
+
+    # Enable netmuxd as its own companion daemon.
+    systemctl enable netmuxd.service || true
+
+    if systemctl is-system-running >/dev/null 2>&1; then
+        systemctl start usbmuxd.service || true
+        systemctl restart netmuxd.service || true
+    fi
+fi
+
+exit 0

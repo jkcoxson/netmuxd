@@ -1,0 +1,29 @@
+[Unit]
+Description=netmuxd - Network usbmuxd replacement for iOS devices
+Documentation=https://github.com/jkcoxson/netmuxd
+After=network-online.target avahi-daemon.service usbmuxd.service
+Wants=network-online.target avahi-daemon.service usbmuxd.service
+
+[Service]
+Type=simple
+User=netmuxd
+Group=netmuxd
+ExecStart=/usr/bin/netmuxd --upstream-usbmuxd
+Restart=always
+RestartSec=5
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Basic hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

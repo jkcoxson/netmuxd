@@ -1,6 +1,6 @@
 [package]
 name = "netmuxd"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 license = "LGPL-2.1-only"
 description = "A daemon for muxing iOS device interfaces"
@@ -9,7 +9,11 @@ documentation = "https://docs.rs/netmuxd"
 repository = "https://github.com/jkcoxson/netmuxd"
 readme = "README.md"
 keywords = ["lockdownd", "ios", "usbmuxd", "iphone"]
-categories = ["command-line-utilities", "hardware-support", "network-programming"]
+categories = [
+  "command-line-utilities",
+  "hardware-support",
+  "network-programming",
+]
 
 # `wasm-test` is a separate trunk app with its own [workspace], not part of
 # the published crate. Everything else here is build/CI metadata that has no

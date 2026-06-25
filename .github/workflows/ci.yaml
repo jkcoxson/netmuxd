@@ -180,7 +180,7 @@ jobs:
               ;;
           esac
 
-          DEPS="libusb-1.0-0, usbmuxd, ${IMOBILEDEVICE_DEP}, libavahi-compat-libdnssd1, avahi-daemon, libcap2-bin"
+          DEPS="libusb-1.0-0, ${IMOBILEDEVICE_DEP}, libavahi-compat-libdnssd1, avahi-daemon, libcap2-bin"
 
           echo "deps=${DEPS}" >> "$GITHUB_OUTPUT"
           echo "Selected dependencies: ${DEPS}"
@@ -196,6 +196,8 @@ jobs:
           arch: ${{ matrix.deb_arch }}
           depends: ${{ steps.deb_deps.outputs.deps }}
           homepage: "https://github.com/jkcoxson/netmuxd"
+          conflicts: "usbmuxd"
+          replaces: "usbmuxd"
           section: "net"
           priority: "optional"
           desc: "Network usbmuxd companion for iOS devices."

@@ -1,14 +1,15 @@
 [Unit]
 Description=netmuxd - Network usbmuxd replacement for iOS devices
 Documentation=https://github.com/jkcoxson/netmuxd
-After=network-online.target avahi-daemon.service usbmuxd.service
-Wants=network-online.target avahi-daemon.service usbmuxd.service
+After=network-online.target avahi-daemon.service
+Wants=network-online.target avahi-daemon.service
+Conflicts=usbmuxd.service
 
 [Service]
 Type=simple
 User=netmuxd
 Group=netmuxd
-ExecStart=/usr/bin/netmuxd --upstream-usbmuxd
+ExecStart=/usr/bin/netmuxd
 Restart=always
 RestartSec=5
 

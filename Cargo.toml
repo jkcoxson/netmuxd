@@ -58,7 +58,7 @@ crossfire = { version = "2.1", features = ["tokio"] }
 mdns-sd = "0.19"
 # Local path until the idevice release carrying `usbmuxd::server` and the
 # `mdns` matcher lands; switch back to a published version before publishing.
-idevice = { path = "../idevice/idevice", default-features = false, features = [
+idevice = { version = "0.1.64", default-features = false, features = [
   "aws-lc",
   "usbmuxd",
   "heartbeat",
@@ -73,7 +73,7 @@ uuid = { version = "1.11", features = ["v4"] }
 # the wasm-friendly idevice TLS backend.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { version = "0.4", optional = true }
-idevice = { path = "../idevice/idevice", default-features = false, features = [
+idevice = { version = "0.1.64", default-features = false, features = [
   "heartbeat",
   "pair",
   "wasm",

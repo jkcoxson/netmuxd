@@ -59,12 +59,6 @@ jobs:
             vendor/libwdi/lib
             vendor/.vendor-stamp-*
           key: vendor-${{ matrix.target }}-${{ hashFiles('vendor-manifest.toml') }}
-      - name: Copy DLLs to workspace root (Windows)
-        if: matrix.windows_dll_dir
-        shell: pwsh
-        run: |
-          Copy-Item "vendor/libusbK/dll/${{ matrix.windows_dll_dir }}/libusbK.dll" -Destination "."
-          Copy-Item "vendor/libusbK/dll/${{ matrix.windows_dll_dir }}/libusb0.dll" -Destination "."
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.
@@ -78,9 +72,11 @@ jobs:
           target: ${{ matrix.target }}
           # (optional) Bundle the libusbK runtime DLLs into the
           # release zip on Windows. They're loaded dynamically by
-          # netmuxd.exe and need to be next to it. Empty for non-
-          # Windows targets.
-          include: ${{ matrix.windows_dll_dir && 'libusbK.dll,libusb0.dll' || '' }}
+          # netmuxd.exe and need to be next to it. build.rs downloads
+          # them into vendor/ during the build, and the action flattens
+          # included files to their basename, so they land beside the
+          # binary in the archive. Empty for non-Windows targets.
+          include: ${{ matrix.windows_dll_dir && format('vendor/libusbK/dll/{0}/libusbK.dll,vendor/libusbK/dll/{0}/libusb0.dll', matrix.windows_dll_dir) || '' }}
           # (optional) On which platform to distribute the `.tar.gz` file.
           # [default value: unix]
           # [possible values: all, unix, windows, none]

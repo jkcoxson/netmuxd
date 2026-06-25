@@ -89,6 +89,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
   upload-packages-ubuntu:
     needs: create-release
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:

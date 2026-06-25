@@ -1,5 +1,10 @@
 // Jackson Coxson
 
+use idevice::usbmuxd::UsbmuxdAddr;
+
+#[cfg(unix)]
+pub const DEFAULT_SOCKET_PATH: &str = "/var/run/usbmuxd";
+
 #[derive(Debug, Clone)]
 pub struct NetmuxdConfig {
     pub port: u16,
@@ -10,6 +15,9 @@ pub struct NetmuxdConfig {
     pub use_unix: bool,
     pub use_mdns: bool,
     pub use_usb: bool,
+    pub upstream: Option<UsbmuxdAddr>,
+    #[cfg(unix)]
+    pub socket_path: String,
 }
 
 impl NetmuxdConfig {
@@ -26,6 +34,9 @@ impl NetmuxdConfig {
             use_unix: true,
             use_mdns: true,
             use_usb: true,
+            upstream: None,
+            #[cfg(unix)]
+            socket_path: DEFAULT_SOCKET_PATH.to_string(),
         }
     }
     pub fn collect() -> Self {
@@ -76,6 +87,26 @@ impl NetmuxdConfig {
                     res.use_heartbeat = false;
                     i += 1;
                 }
+                "--upstream-usbmuxd" => {
+                    match std::env::args().nth(i + 1) {
+                        Some(addr) if !addr.starts_with('-') => {
+                            res.upstream = Some(parse_upstream(&addr));
+                            i += 2;
+                        }
+                        _ => {
+                            res.upstream = Some(UsbmuxdAddr::from_env_var().unwrap_or_default());
+                            i += 1;
+                        }
+                    }
+                    res.use_usb = false;
+                }
+                #[cfg(unix)]
+                "--socket-path" => {
+                    res.socket_path = std::env::args()
+                        .nth(i + 1)
+                        .expect("--socket-path passed without a path");
+                    i += 2;
+                }
                 "-h" | "--help" => {
                     println!("netmuxd - a network multiplexer");
                     println!("Usage:");
@@ -98,6 +129,19 @@ impl NetmuxdConfig {
                     println!("  --disable-unix");
                     println!("  --disable-mdns");
                     println!("  --disable-usb");
+                    println!(
+                        "  --upstream-usbmuxd [addr]  (shim mode: forward USB/most requests to this muxer;"
+                    );
+                    println!(
+                        "                              addr is a unix socket path or IP:port, defaulting to the"
+                    );
+                    println!(
+                        "                              system usbmuxd / USBMUXD_SOCKET_ADDRESS; implies --disable-usb)"
+                    );
+                    #[cfg(unix)]
+                    println!(
+                        "  --socket-path <path>       (unix socket to listen on; default {DEFAULT_SOCKET_PATH})"
+                    );
                     println!("  -h, --help");
                     println!("  --about");
                     println!(
@@ -120,5 +164,30 @@ impl NetmuxdConfig {
             }
         }
         res
+    }
+}
+
+/// Parse an `--upstream-usbmuxd` value into a [`UsbmuxdAddr`].
+///
+/// On Unix a value without a `:` is treated as a socket path; otherwise it's
+/// parsed as an `IP:port` TCP address. On non-Unix only TCP is supported.
+fn parse_upstream(addr: &str) -> UsbmuxdAddr {
+    #[cfg(unix)]
+    {
+        if addr.contains(':') {
+            UsbmuxdAddr::TcpSocket(
+                addr.parse()
+                    .expect("--upstream-usbmuxd TCP address must be IP:port"),
+            )
+        } else {
+            UsbmuxdAddr::UnixSocket(addr.to_string())
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        UsbmuxdAddr::TcpSocket(
+            addr.parse()
+                .expect("--upstream-usbmuxd TCP address must be IP:port"),
+        )
     }
 }

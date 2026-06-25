@@ -863,15 +863,15 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "idevice"
-version = "0.1.59"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33caa95bc58ce8809b6e00a377f4b83b29ca34e1fdbbf73dba7cd0c59dba738f"
+version = "0.1.63"
 dependencies = [
  "base64",
  "chrono",
  "futures",
  "getrandom 0.2.17",
  "getrandom 0.4.2",
+ "hkdf",
+ "hmac",
  "libc",
  "plist",
  "plist-macro",
@@ -886,6 +886,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "wasm-bindgen-futures",
  "wasmtimer",
  "web-time",
  "x509-cert",
@@ -1084,22 +1085,18 @@ dependencies = [
 name = "netmuxd"
 version = "0.3.2"
 dependencies = [
- "base64",
  "colored",
  "crossfire",
  "env_logger",
  "futures-util",
  "getrandom 0.2.17",
  "getrandom 0.4.2",
- "hkdf",
- "hmac",
  "idevice",
  "log",
  "mdns-sd",
  "nusb",
  "plist",
  "plist-macro",
- "sha2",
  "thiserror",
  "tokio",
  "uuid",

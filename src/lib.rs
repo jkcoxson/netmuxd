@@ -6,15 +6,16 @@
 //!   user's `nusb` fork). Includes the `usbmuxd`-v2 wire protocol, generic
 //!   `AsyncRead`/`AsyncWrite` adapters over `nusb` bulk endpoints, and
 //!   Apple-specific open-and-claim helpers.
-//! - [`raw_packet`], [`devices`]: usbmuxd protocol packet codec and the
-//!   device-list plist shape served by the daemon.
+//! - [`devices`]: the device-list plist shape served by the daemon. The
+//!   usbmuxd packet codec and typed protocol messages live in
+//!   `idevice::usbmuxd` (see [`idevice::usbmuxd::RawPacket`] and
+//!   `idevice::usbmuxd::server`).
 //!
 //! The bundled `netmuxd`, `passthrough`, and `add_device` binaries
 //! consume this library plus the native-only [`daemon`] orchestration
 //! (USB enumeration / hotplug / pair / manager).
 
 pub mod devices;
-pub mod raw_packet;
 pub mod usb;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,6 +31,8 @@ pub mod daemon;
 pub mod mdns;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pairing_file;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod upstream;
 
 #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
 pub mod libusbk;

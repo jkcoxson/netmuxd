@@ -17,6 +17,14 @@ use crate::{
 pub type ManagerSender = MAsyncTx<ManagerRequest>;
 pub type ManagerReceiver = AsyncRx<ManagerRequest>;
 
+/// First device ID handed out to network devices in shim mode.
+///
+/// Upstream usbmuxd assigns USB device IDs counting up from 1; the shim's
+/// network devices must use a disjoint range so a `Connect` DeviceID
+/// unambiguously identifies which muxer owns the device. usbmuxd will never
+/// realistically allocate this many IDs in one session.
+pub const SHIM_NETWORK_ID_BASE: u64 = 0x1000_0000;
+
 pub struct ManagerRequest {
     pub request_type: ManagerRequestType,
     pub response: Option<Sender<plist::Dictionary>>,
@@ -149,7 +157,11 @@ pub fn new_manager_thread(config: &NetmuxdConfig) -> ManagerSender {
     let mut usb_handles: HashMap<u64, UsbMuxHandle> = HashMap::new();
     let mut open_sockets: HashMap<u64, Vec<Sender<()>>> = HashMap::new();
     let mut listeners: Vec<UnboundedSender<ListenerEvent>> = Vec::new();
-    let mut last_index: u64 = 1;
+    let mut last_index: u64 = if config.upstream.is_some() {
+        SHIM_NETWORK_ID_BASE
+    } else {
+        1
+    };
     let mut last_interface_index: u64 = 1;
 
     tokio::task::spawn(async move {

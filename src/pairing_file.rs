@@ -2,12 +2,8 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
 use idevice::{IdeviceError, pairing_file::PairingFile};
 use log::{debug, info, trace, warn};
-use sha2::{Sha256, Sha512};
 use tokio::io::AsyncReadExt;
 
 use crate::config::NetmuxdConfig;
@@ -83,7 +79,7 @@ impl PairingFileFinder {
         // Decode all tags up front (they're independent of the candidate HostID).
         let decoded_tags: Vec<[u8; 8]> = auth_tags
             .iter()
-            .filter_map(|t| decode_auth_tag(t))
+            .filter_map(|t| idevice::mdns::decode_auth_tag(t))
             .collect();
         if decoded_tags.is_empty() {
             debug!("TXT record had authTag(s) but none decoded to 8 bytes");
@@ -100,16 +96,8 @@ impl PairingFileFinder {
 
     fn match_txt(&self, identifier: &[u8], decoded_tags: &[[u8; 8]]) -> Option<String> {
         for (udid, host_id) in &self.host_ids {
-            let hk = Hkdf::<Sha512>::new(None, host_id);
-            let mut key = [0u8; 32];
-            if hk.expand(&[], &mut key).is_err() {
-                continue;
-            }
-            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key).ok()?;
-            mac.update(identifier);
-            let tag = mac.finalize().into_bytes();
-            let expected = &tag[..8];
-            if decoded_tags.iter().any(|d| d == expected) {
+            let expected = idevice::mdns::derive_auth_tag(host_id, identifier);
+            if decoded_tags.contains(&expected) {
                 info!("TXT record matched UDID {}", udid);
                 return Some(udid.clone());
             }
@@ -293,27 +281,4 @@ impl PairingFileFinder {
 
         Ok((host_id, system_buid))
     }
-}
-
-/// Decode an `authTag` TXT value to its 8-byte form.
-///
-/// Bonjour TXT values are raw bytes; the `authTag` entries carry base64-encoded
-/// 8-byte HMAC truncations. MobileDevice trims ASCII whitespace before decoding
-/// (see `_EVP_DecodeBlock` site in `AMDIsTXTRecordForUDID`). Anything that
-/// doesn't decode to exactly 8 bytes is rejected.
-fn decode_auth_tag(raw: &[u8]) -> Option<[u8; 8]> {
-    let trimmed = raw
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .map(|start| {
-            let end = raw
-                .iter()
-                .rposition(|b| !b.is_ascii_whitespace())
-                .map(|i| i + 1)
-                .unwrap_or(raw.len());
-            &raw[start..end]
-        })
-        .unwrap_or(&[][..]);
-    let decoded = B64.decode(trimmed).ok()?;
-    decoded.as_slice().try_into().ok()
 }

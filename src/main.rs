@@ -3,13 +3,24 @@
 #[cfg(unix)]
 use std::{fs, os::unix::prelude::PermissionsExt};
 
+use idevice::{
+    IdeviceError,
+    usbmuxd::{
+        RawPacket, UsbmuxdAddr,
+        errors::UsbmuxdError,
+        server::{UsbmuxdServerRequest, UsbmuxdServerResponse},
+    },
+};
 use netmuxd::{
     config::NetmuxdConfig,
     daemon,
-    manager::{self, ListenerEvent, ManagerRequest, ManagerSender, new_manager_thread},
+    manager::{
+        self, ListenerEvent, ManagerRequest, ManagerSender, SHIM_NETWORK_ID_BASE,
+        new_manager_thread,
+    },
     mdns,
     pairing_file::PairingFileFinder,
-    raw_packet::{self, RawPacket},
+    upstream,
 };
 
 #[cfg(target_os = "windows")]
@@ -54,6 +65,7 @@ async fn main() {
     if let Some(host) = config.host.clone() {
         let manager_sender = manager_sender.clone();
         let pairing_file_finder = PairingFileFinder::new(&config);
+        let upstream = config.upstream.clone();
         tokio::spawn(async move {
             // Create TcpListener
             let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, config.port))
@@ -62,9 +74,11 @@ async fn main() {
 
             println!("Listening on {}:{}", host, config.port);
             #[cfg(unix)]
-            println!(
-                "WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well"
-            );
+            if upstream.is_none() {
+                println!(
+                    "WARNING: Running in host mode will not work unless you are running a daemon in unix mode as well"
+                );
+            }
             loop {
                 let (socket, _) = match listener.accept().await {
                     Ok(s) => s,
@@ -74,7 +88,13 @@ async fn main() {
                     }
                 };
 
-                handle_stream(socket, manager_sender.clone(), pairing_file_finder.clone()).await;
+                handle_stream(
+                    socket,
+                    manager_sender.clone(),
+                    pairing_file_finder.clone(),
+                    upstream.clone(),
+                )
+                .await;
             }
         });
     }
@@ -83,20 +103,32 @@ async fn main() {
     if config.use_unix {
         let manager_sender = manager_sender.clone();
         let pairing_file_finder = PairingFileFinder::new(&config);
+        let upstream = config.upstream.clone();
+        let socket_path = config.socket_path.clone();
+
+        // Refuse to bind (and thereby delete) the upstream's own socket.
+        if let Some(UsbmuxdAddr::UnixSocket(up)) = &upstream
+            && *up == socket_path
+        {
+            panic!(
+                "--socket-path ({socket_path}) is the same as the upstream usbmuxd socket; the shim must listen on a different path"
+            );
+        }
+
         tokio::spawn(async move {
             // Delete old Unix socket
             info!("Deleting old Unix socket");
-            std::fs::remove_file("/var/run/usbmuxd").unwrap_or_default();
+            std::fs::remove_file(&socket_path).unwrap_or_default();
             // Create UnixListener
             info!("Binding to new Unix socket");
-            let listener = tokio::net::UnixListener::bind("/var/run/usbmuxd")
+            let listener = tokio::net::UnixListener::bind(&socket_path)
                 .expect("Unable to bind to unix socket");
             // Change the permission of the socket
             info!("Changing permissions of socket");
-            fs::set_permissions("/var/run/usbmuxd", fs::Permissions::from_mode(0o666))
+            fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o666))
                 .expect("Unable to set socket file permissions");
 
-            println!("Listening on /var/run/usbmuxd");
+            println!("Listening on {socket_path}");
 
             loop {
                 let (socket, _) = match listener.accept().await {
@@ -107,7 +139,13 @@ async fn main() {
                     }
                 };
 
-                handle_stream(socket, manager_sender.clone(), pairing_file_finder.clone()).await;
+                handle_stream(
+                    socket,
+                    manager_sender.clone(),
+                    pairing_file_finder.clone(),
+                    upstream.clone(),
+                )
+                .await;
             }
         });
     }
@@ -142,6 +180,7 @@ async fn handle_stream(
     mut socket: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     manager_sender: ManagerSender,
     pairing_file_finder: PairingFileFinder,
+    upstream: Option<UsbmuxdAddr>,
 ) {
     tokio::spawn(async move {
         // 16 MiB cap on a single packet to avoid unbounded allocations from a
@@ -176,9 +215,7 @@ async fn handle_stream(
                 );
                 return;
             }
-            let buffer = &mut buffer;
-
-            let parsed: raw_packet::RawPacket = match buffer.try_into() {
+            let parsed: RawPacket = match RawPacket::try_from(&mut buffer) {
                 Ok(p) => p,
                 Err(_) => {
                     warn!("Could not parse packet");
@@ -187,119 +224,60 @@ async fn handle_stream(
             };
             trace!("Recv'd plist: {parsed:#?}");
 
-            let packet_type = match parsed.plist.get("MessageType") {
-                Some(plist::Value::String(p)) => p,
-                _ => {
-                    warn!("Packet didn't contain MessageType");
+            // Decode the standard usbmuxd requests via idevice. netmuxd's own
+            // AddDevice/RemoveDevice extensions aren't part of the standard
+            // protocol, so they surface as `UnknownMessageType` and are
+            // dispatched separately below.
+            let request = match UsbmuxdServerRequest::decode(&parsed) {
+                Ok(r) => r,
+                Err(IdeviceError::Usbmuxd(UsbmuxdError::UnknownMessageType(message_type))) => {
+                    match message_type.as_str() {
+                        //////////////////////////////
+                        // netmuxd specific packets //
+                        //////////////////////////////
+                        "AddDevice" => {
+                            handle_add_device(&mut socket, &manager_sender, &parsed).await;
+                            return;
+                        }
+                        "RemoveDevice" => {
+                            handle_remove_device(&manager_sender, &parsed).await;
+                            return;
+                        }
+                        other => {
+                            // Forward anything we don't model to the upstream
+                            // muxer when in shim mode; otherwise it's unknown.
+                            // There's no local equivalent, so a dead upstream
+                            // just means we can't answer it.
+                            if let Some(addr) = upstream.as_ref() {
+                                match upstream::forward_to_upstream(addr, &buffer).await {
+                                    Ok(frame) => {
+                                        if let Err(e) = socket.write_all(&frame).await {
+                                            warn!("Failed to send response to client: {e:?}");
+                                            return;
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed forwarding {other} to upstream: {e}"),
+                                }
+                                continue;
+                            }
+                            warn!("Unknown packet type: {other}");
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Malformed usbmuxd request: {e}");
                     return;
                 }
             };
 
-            trace!("usbmuxd client sent {packet_type}");
+            trace!("usbmuxd client sent {request:?}");
 
-            match packet_type.as_str() {
-                //////////////////////////////
-                // netmuxd specific packets //
-                //////////////////////////////
-                "AddDevice" => {
-                    let connection_type = match parsed.plist.get("ConnectionType") {
-                        Some(plist::Value::String(c)) => c,
-                        _ => {
-                            warn!("Packet didn't contain ConnectionType");
-                            return;
-                        }
-                    };
-                    let service_name = match parsed.plist.get("ServiceName") {
-                        Some(plist::Value::String(s)) => s,
-                        _ => {
-                            warn!("Packet didn't contain ServiceName");
-                            return;
-                        }
-                    };
-
-                    let ip_address = match parsed.plist.get("IPAddress") {
-                        Some(plist::Value::String(ip)) => ip,
-                        _ => {
-                            warn!("Packet didn't contain IPAddress");
-                            return;
-                        }
-                    };
-
-                    let ip_address = match ip_address.parse() {
-                        Ok(i) => i,
-                        Err(_) => {
-                            warn!("Bad IP requested: {ip_address}");
-                            return;
-                        }
-                    };
-
-                    let udid = match parsed.plist.get("DeviceID") {
-                        Some(plist::Value::String(u)) => u,
-                        _ => {
-                            warn!("Packet didn't contain DeviceID");
-                            return;
-                        }
-                    };
-
-                    let (tx, rx) = channel();
-                    if let Err(e) = manager_sender
-                        .send(ManagerRequest {
-                            request_type: manager::ManagerRequestType::DiscoveredNetworkDevice {
-                                udid: udid.clone(),
-                                network_address: ip_address,
-                                service_name: service_name.to_string(),
-                                connection_type: connection_type.to_string(),
-                            },
-                            response: Some(tx),
-                        })
-                        .await
-                    {
-                        log::error!("Failed to send to manager: {e:?}, stopping!");
-                        return;
-                    }
-                    let res = match rx.await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            log::error!("Failed to recv manager response: {e:?}");
-                            return;
-                        }
-                    };
-
-                    let res: Vec<u8> = RawPacket::new(res, 1, 8, parsed.tag).into();
-                    if let Err(e) = socket.write_all(&res).await {
-                        warn!("Failed to send back success message: {e:?}");
-                    }
-
-                    // No more further communication for this packet
-                    return;
-                }
-                "RemoveDevice" => {
-                    let udid = match parsed.plist.get("DeviceID") {
-                        Some(plist::Value::String(u)) => u,
-                        _ => {
-                            warn!("Packet didn't contain DeviceID");
-                            return;
-                        }
-                    };
-
-                    manager_sender
-                        .send(ManagerRequest {
-                            request_type: manager::ManagerRequestType::RemoveDevice {
-                                udid: udid.to_string(),
-                                connection_type: None,
-                            },
-                            response: None,
-                        })
-                        .await
-                        .ok();
-
-                    return;
-                }
-
+            match request {
                 //////////////////////////////
                 // usbmuxd protocol packets //
                 //////////////////////////////
-                "ListDevices" => {
+                UsbmuxdServerRequest::ListDevices => {
                     let (tx, rx) = channel();
                     if let Err(e) = manager_sender
                         .send(ManagerRequest {
@@ -317,30 +295,62 @@ async fn handle_stream(
                             return;
                         }
                     };
-                    println!("{}", plist_macro::pretty_print_dictionary(&res));
 
-                    let res = RawPacket::new(res, 1, 8, parsed.tag);
-                    let res: Vec<u8> = res.into();
-                    if let Err(e) = socket.write_all(&res).await {
+                    let out: Vec<u8> = if let Some(addr) = upstream.as_ref() {
+                        // Shim mode: ask upstream for its (USB) device list and
+                        // append our network devices to it.
+                        let network = match res.get("DeviceList") {
+                            Some(plist::Value::Array(a)) => a.clone(),
+                            _ => Vec::new(),
+                        };
+                        match upstream::list_devices_merged(addr, &buffer, network, parsed.tag)
+                            .await
+                        {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                // Upstream is unreachable: serve just our
+                                // network devices instead of dropping the
+                                // client.
+                                warn!(
+                                    "Upstream ListDevices failed ({e}); serving network devices only"
+                                );
+                                RawPacket::new(res, 1, 8, parsed.tag).into()
+                            }
+                        }
+                    } else {
+                        println!("{}", plist_macro::pretty_print_dictionary(&res));
+                        RawPacket::new(res, 1, 8, parsed.tag).into()
+                    };
+                    if let Err(e) = socket.write_all(&out).await {
                         warn!("Failed to send response to client: {e:}");
                         return;
                     }
 
                     continue;
                 }
-                "Listen" => {
-                    run_listen(socket, manager_sender, parsed.tag).await;
+                UsbmuxdServerRequest::Listen => {
+                    run_listen(socket, manager_sender, parsed.tag, upstream).await;
                     return;
                 }
-                "ReadPairRecord" => {
-                    let pair_file = match pairing_file_finder
-                        .get_pairing_record(match parsed.plist.get("PairRecordID") {
-                            Some(plist::Value::String(p)) => p,
-                            _ => {
-                                warn!("Request did not contain PairRecordID");
-                                return;
+                UsbmuxdServerRequest::ReadPairRecord { pair_record_id } => {
+                    // Forward to upstream when possible; fall back to our own
+                    // lockdown storage if it's unreachable.
+                    if let Some(addr) = upstream.as_ref() {
+                        match upstream::forward_to_upstream(addr, &buffer).await {
+                            Ok(frame) => {
+                                if let Err(e) = socket.write_all(&frame).await {
+                                    warn!("Failed to send response to client: {e:?}");
+                                    return;
+                                }
+                                continue;
                             }
-                        })
+                            Err(e) => warn!(
+                                "Upstream ReadPairRecord failed ({e}); reading local pairing storage"
+                            ),
+                        }
+                    }
+                    let pair_file = match pairing_file_finder
+                        .get_pairing_record(&pair_record_id)
                         .await
                     {
                         Ok(pair_file) => pair_file,
@@ -358,11 +368,9 @@ async fn handle_stream(
                         }
                     };
 
-                    let mut p = plist::Dictionary::new();
-                    p.insert("PairRecordData".into(), plist::Value::Data(pair_file));
-
-                    let res = RawPacket::new(p, 1, 8, parsed.tag);
-                    let res: Vec<u8> = res.into();
+                    let res: Vec<u8> = UsbmuxdServerResponse::PairRecord(pair_file)
+                        .into_packet(parsed.tag)
+                        .into();
                     if let Err(e) = socket.write_all(&res).await {
                         warn!("Failed to send response to client: {e:?}");
                         return;
@@ -370,31 +378,33 @@ async fn handle_stream(
 
                     continue;
                 }
-                "SavePairRecord" => {
-                    let pair_record_data = match parsed.plist.get("PairRecordData") {
-                        Some(plist::Value::Data(d)) => d.clone(),
-                        _ => {
-                            warn!("SavePairRecord did not contain PairRecordData");
-                            return;
+                UsbmuxdServerRequest::SavePairRecord {
+                    pair_record_id,
+                    device_id,
+                    pair_record_data,
+                } => {
+                    // Forward to upstream when possible; fall back to writing
+                    // our own lockdown storage if it's unreachable.
+                    if let Some(addr) = upstream.as_ref() {
+                        match upstream::forward_to_upstream(addr, &buffer).await {
+                            Ok(frame) => {
+                                if let Err(e) = socket.write_all(&frame).await {
+                                    warn!("Failed to send response to client: {e:?}");
+                                    return;
+                                }
+                                continue;
+                            }
+                            Err(e) => warn!(
+                                "Upstream SavePairRecord failed ({e}); writing local pairing storage"
+                            ),
                         }
-                    };
-
-                    let udid = match parsed.plist.get("PairRecordID") {
-                        Some(plist::Value::String(u)) => Some(u.clone()),
-                        _ => None,
-                    };
-                    let udid = match udid {
+                    }
+                    let udid = match pair_record_id {
                         Some(u) => u,
                         None => {
-                            let device_id = match parsed.plist.get("DeviceID") {
-                                Some(plist::Value::Integer(d)) => match d.as_unsigned() {
-                                    Some(d) => d,
-                                    None => {
-                                        warn!("DeviceID is not unsigned");
-                                        return;
-                                    }
-                                },
-                                _ => {
+                            let device_id = match device_id {
+                                Some(d) => d,
+                                None => {
                                     warn!("SavePairRecord missing both PairRecordID and DeviceID");
                                     return;
                                 }
@@ -446,10 +456,9 @@ async fn handle_stream(
                         }
                     };
 
-                    let mut p = plist::Dictionary::new();
-                    p.insert("MessageType".into(), "Result".into());
-                    p.insert("Number".into(), result_number.into());
-                    let res: Vec<u8> = RawPacket::new(p, 1, 8, parsed.tag).into();
+                    let res: Vec<u8> = UsbmuxdServerResponse::Result(result_number)
+                        .into_packet(parsed.tag)
+                        .into();
                     if let Err(e) = socket.write_all(&res).await {
                         warn!("Failed to send response to client: {e:?}");
                         return;
@@ -457,7 +466,23 @@ async fn handle_stream(
 
                     continue;
                 }
-                "ReadBUID" => {
+                UsbmuxdServerRequest::ReadBuid => {
+                    // Forward to upstream when possible; fall back to our own
+                    // host identity if it's unreachable.
+                    if let Some(addr) = upstream.as_ref() {
+                        match upstream::forward_to_upstream(addr, &buffer).await {
+                            Ok(frame) => {
+                                if let Err(e) = socket.write_all(&frame).await {
+                                    warn!("Failed to send response to client: {e:?}");
+                                    return;
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                warn!("Upstream ReadBUID failed ({e}); using local host identity")
+                            }
+                        }
+                    }
                     let buid = match pairing_file_finder.get_buid().await {
                         Ok(b) => b,
                         Err(e) => {
@@ -466,11 +491,9 @@ async fn handle_stream(
                         }
                     };
 
-                    let mut p = plist::Dictionary::new();
-                    p.insert("BUID".into(), buid.into());
-
-                    let res = RawPacket::new(p, 1, 8, parsed.tag);
-                    let res: Vec<u8> = res.into();
+                    let res: Vec<u8> = UsbmuxdServerResponse::Buid(buid)
+                        .into_packet(parsed.tag)
+                        .into();
                     if let Err(e) = socket.write_all(&res).await {
                         warn!("Failed to send response to client: {e:?}");
                         return;
@@ -478,41 +501,41 @@ async fn handle_stream(
 
                     continue;
                 }
-                "Connect" => {
-                    let connection_port = match parsed.plist.get("PortNumber") {
-                        Some(plist::Value::Integer(p)) => {
-                            if let Some(u) = p.as_unsigned() {
-                                u as u16
-                            } else if let Some(s) = p.as_signed() {
-                                s as u16
-                            } else {
-                                warn!("PortNumber is not an integer");
-                                return;
+                UsbmuxdServerRequest::Connect { device_id, port } => {
+                    info!("Client is establishing connection to port {port}");
+
+                    // In shim mode, a DeviceID below the network base belongs to
+                    // the upstream muxer: hand the whole connection to it. The
+                    // upstream's Result and the tunnel both flow back over the
+                    // splice, so we don't reply ourselves.
+                    if let Some(addr) = upstream.as_ref()
+                        && device_id < SHIM_NETWORK_ID_BASE
+                    {
+                        let mut up = match upstream::connect(addr).await {
+                            Ok(u) => u,
+                            Err(e) => {
+                                error!("Failed to reach upstream for Connect: {e}");
+                                let res: Vec<u8> = UsbmuxdServerResponse::Result(1)
+                                    .into_packet(parsed.tag)
+                                    .into();
+                                let _ = socket.write_all(&res).await;
+                                continue;
                             }
+                        };
+                        if let Err(e) = up.write_all(&buffer).await {
+                            error!("Failed to forward Connect to upstream: {e:?}");
+                            let res: Vec<u8> = UsbmuxdServerResponse::Result(1)
+                                .into_packet(parsed.tag)
+                                .into();
+                            let _ = socket.write_all(&res).await;
+                            continue;
                         }
-                        _ => {
-                            warn!("Packet didn't contain PortNumber");
-                            return;
+                        if let Err(e) = tokio::io::copy_bidirectional(&mut *up, &mut socket).await {
+                            info!("Upstream proxied stream stopped: {e:?}");
                         }
-                    };
+                        return;
+                    }
 
-                    let device_id = match parsed.plist.get("DeviceID") {
-                        Some(plist::Value::Integer(d)) => match d.as_unsigned() {
-                            Some(d) => d,
-                            None => {
-                                warn!("DeviceID is not unsigned!");
-                                return;
-                            }
-                        },
-                        _ => {
-                            warn!("Packet didn't contain DeviceID");
-                            return;
-                        }
-                    };
-
-                    let connection_port = connection_port.to_be();
-
-                    info!("Client is establishing connection to port {connection_port}");
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     if let Err(e) = manager_sender
                         .send(ManagerRequest {
@@ -532,11 +555,9 @@ async fn handle_stream(
                         Ok(Some(l)) => l,
                         Ok(None) => {
                             warn!("No device with id {device_id}");
-                            let mut p = plist::Dictionary::new();
-                            p.insert("MessageType".into(), "Result".into());
-                            p.insert("Number".into(), 1.into());
-                            let res = RawPacket::new(p, 1, 8, parsed.tag);
-                            let res: Vec<u8> = res.into();
+                            let res: Vec<u8> = UsbmuxdServerResponse::Result(1)
+                                .into_packet(parsed.tag)
+                                .into();
                             if let Err(e) = socket.write_all(&res).await {
                                 warn!("Failed to send response to client: {e:?}");
                             }
@@ -552,8 +573,7 @@ async fn handle_stream(
                     let upstream: Result<Upstream, String> = match lookup.connection_type.as_str() {
                         "Network" => match lookup.network_address {
                             Some(addr) => {
-                                match tokio::net::TcpStream::connect((addr, connection_port)).await
-                                {
+                                match tokio::net::TcpStream::connect((addr, port)).await {
                                     Ok(s) => Ok(Box::new(s) as Upstream),
                                     Err(e) => Err(format!("tcp connect: {e:?}")),
                                 }
@@ -561,7 +581,7 @@ async fn handle_stream(
                             None => Err("network device missing address".to_string()),
                         },
                         "USB" => match lookup.usb {
-                            Some(handle) => match handle.connect(connection_port).await {
+                            Some(handle) => match handle.connect(port).await {
                                 Ok(s) => Ok(Box::new(s) as Upstream),
                                 Err(e) => Err(format!("usb connect: {e:?}")),
                             },
@@ -573,14 +593,10 @@ async fn handle_stream(
                     let mut upstream = match upstream {
                         Ok(s) => s,
                         Err(e) => {
-                            error!(
-                                "Unable to connect to device {device_id} port {connection_port}: {e}"
-                            );
-                            let mut p = plist::Dictionary::new();
-                            p.insert("MessageType".into(), "Result".into());
-                            p.insert("Number".into(), 1.into());
-                            let res = RawPacket::new(p, 1, 8, parsed.tag);
-                            let res: Vec<u8> = res.into();
+                            error!("Unable to connect to device {device_id} port {port}: {e}");
+                            let res: Vec<u8> = UsbmuxdServerResponse::Result(1)
+                                .into_packet(parsed.tag)
+                                .into();
                             if let Err(e) = socket.write_all(&res).await {
                                 warn!("Failed to send response to client: {e:?}");
                             }
@@ -588,11 +604,9 @@ async fn handle_stream(
                         }
                     };
 
-                    let mut p = plist::Dictionary::new();
-                    p.insert("MessageType".into(), "Result".into());
-                    p.insert("Number".into(), 0.into());
-                    let res = RawPacket::new(p, 1, 8, parsed.tag);
-                    let res: Vec<u8> = res.into();
+                    let res: Vec<u8> = UsbmuxdServerResponse::Result(0)
+                        .into_packet(parsed.tag)
+                        .into();
                     if let Err(e) = socket.write_all(&res).await {
                         warn!("Failed to send response to client: {e:?}");
                         return;
@@ -620,22 +634,119 @@ async fn handle_stream(
                     }
                     return;
                 }
-                _ => {
-                    warn!("Unknown packet type");
-                }
             }
         }
     });
 }
 
-async fn run_listen<S>(mut socket: S, manager_sender: ManagerSender, listen_tag: u32)
-where
+/// netmuxd extension: register a network device the client discovered itself.
+async fn handle_add_device(
+    socket: &mut (impl AsyncWrite + Unpin),
+    manager_sender: &ManagerSender,
+    parsed: &RawPacket,
+) {
+    let connection_type = match parsed.plist.get("ConnectionType") {
+        Some(plist::Value::String(c)) => c,
+        _ => {
+            warn!("Packet didn't contain ConnectionType");
+            return;
+        }
+    };
+    let service_name = match parsed.plist.get("ServiceName") {
+        Some(plist::Value::String(s)) => s,
+        _ => {
+            warn!("Packet didn't contain ServiceName");
+            return;
+        }
+    };
+
+    let ip_address = match parsed.plist.get("IPAddress") {
+        Some(plist::Value::String(ip)) => ip,
+        _ => {
+            warn!("Packet didn't contain IPAddress");
+            return;
+        }
+    };
+
+    let ip_address = match ip_address.parse() {
+        Ok(i) => i,
+        Err(_) => {
+            warn!("Bad IP requested: {ip_address}");
+            return;
+        }
+    };
+
+    let udid = match parsed.plist.get("DeviceID") {
+        Some(plist::Value::String(u)) => u,
+        _ => {
+            warn!("Packet didn't contain DeviceID");
+            return;
+        }
+    };
+
+    let (tx, rx) = channel();
+    if let Err(e) = manager_sender
+        .send(ManagerRequest {
+            request_type: manager::ManagerRequestType::DiscoveredNetworkDevice {
+                udid: udid.clone(),
+                network_address: ip_address,
+                service_name: service_name.to_string(),
+                connection_type: connection_type.to_string(),
+            },
+            response: Some(tx),
+        })
+        .await
+    {
+        log::error!("Failed to send to manager: {e:?}, stopping!");
+        return;
+    }
+    let res = match rx.await {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to recv manager response: {e:?}");
+            return;
+        }
+    };
+
+    let res: Vec<u8> = RawPacket::new(res, 1, 8, parsed.tag).into();
+    if let Err(e) = socket.write_all(&res).await {
+        warn!("Failed to send back success message: {e:?}");
+    }
+}
+
+/// netmuxd extension: drop a device the client previously added.
+async fn handle_remove_device(manager_sender: &ManagerSender, parsed: &RawPacket) {
+    let udid = match parsed.plist.get("DeviceID") {
+        Some(plist::Value::String(u)) => u,
+        _ => {
+            warn!("Packet didn't contain DeviceID");
+            return;
+        }
+    };
+
+    manager_sender
+        .send(ManagerRequest {
+            request_type: manager::ManagerRequestType::RemoveDevice {
+                udid: udid.to_string(),
+                connection_type: None,
+            },
+            response: None,
+        })
+        .await
+        .ok();
+}
+
+async fn run_listen<S>(
+    mut socket: S,
+    manager_sender: ManagerSender,
+    listen_tag: u32,
+    upstream: Option<UsbmuxdAddr>,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut p = plist::Dictionary::new();
-    p.insert("MessageType".into(), "Result".into());
-    p.insert("Number".into(), 0.into());
-    let res: Vec<u8> = RawPacket::new(p, 1, 8, listen_tag).into();
+    let res: Vec<u8> = UsbmuxdServerResponse::Result(0)
+        .into_packet(listen_tag)
+        .into();
     if let Err(e) = socket.write_all(&res).await {
         warn!("Failed to send Listen Result: {e:?}");
         return;
@@ -653,25 +764,47 @@ where
         return;
     }
 
+    // In shim mode, also relay the upstream muxer's attach/detach frames so the
+    // client sees its USB devices alongside our network devices. The pump
+    // reconnects with backoff if upstream drops; the guard aborts it when this
+    // Listen session ends.
+    let (mut upstream_rx, _upstream_guard) = match upstream {
+        Some(addr) => {
+            let (rx, guard) = spawn_upstream_listen(addr);
+            (Some(rx), Some(guard))
+        }
+        None => (None, None),
+    };
+
     let (mut reader, mut writer) = tokio::io::split(socket);
     let mut sink = [0u8; 256];
     loop {
         tokio::select! {
             event = rx.recv() => {
                 let Some(event) = event else { return; };
-                let plist = match event {
-                    ListenerEvent::Attached(p) => p,
-                    ListenerEvent::Detached(id) => {
-                        let mut p = plist::Dictionary::new();
-                        p.insert("MessageType".into(), "Detached".into());
-                        p.insert("DeviceID".into(), id.into());
-                        p
-                    }
+                let response = match event {
+                    ListenerEvent::Attached(p) => UsbmuxdServerResponse::Attached(p),
+                    ListenerEvent::Detached(id) => UsbmuxdServerResponse::Detached(id),
                 };
-                let bytes: Vec<u8> = RawPacket::new(plist, 1, 8, 0).into();
+                let bytes: Vec<u8> = response.into_packet(0).into();
                 if let Err(e) = writer.write_all(&bytes).await {
                     info!("Listener write failed, dropping: {e:?}");
                     return;
+                }
+            }
+            // Relay upstream attach/detach frames verbatim.
+            frame = next_upstream(&mut upstream_rx) => {
+                match frame {
+                    Some(frame) => {
+                        if let Err(e) = writer.write_all(&frame).await {
+                            info!("Listener write (upstream) failed, dropping: {e:?}");
+                            return;
+                        }
+                    }
+                    None => {
+                        warn!("Upstream Listen stream ended; relaying network devices only");
+                        upstream_rx = None;
+                    }
                 }
             }
             r = reader.read(&mut sink) => {
@@ -681,5 +814,87 @@ where
                 }
             }
         }
+    }
+}
+
+/// A spawned task that is aborted when this guard is dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Spawn a task that relays the upstream muxer's `Listen` attach/detach frames
+/// into the returned channel, reconnecting with capped backoff whenever the
+/// upstream stream drops. The returned guard aborts the task when dropped (when
+/// the client's Listen session ends).
+fn spawn_upstream_listen(
+    addr: UsbmuxdAddr,
+) -> (tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>, AbortOnDrop) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let handle = tokio::spawn(upstream_listen_pump(addr, tx));
+    (rx, AbortOnDrop(handle))
+}
+
+async fn upstream_listen_pump(addr: UsbmuxdAddr, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
+    use std::time::Duration;
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+    const MAX_BACKOFF: Duration = Duration::from_secs(5);
+
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        match open_upstream_listen(&addr).await {
+            Ok(mut up) => {
+                info!("Upstream Listen stream connected");
+                backoff = INITIAL_BACKOFF;
+                loop {
+                    match upstream::read_frame(&mut *up).await {
+                        Ok(frame) => {
+                            // Stop for good once the client's Listen session
+                            // ends (the receiver was dropped).
+                            if tx.send(frame).is_err() {
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Upstream Listen stream dropped ({e:?}); reconnecting");
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => warn!("Upstream Listen connect failed ({e}); retrying in {backoff:?}"),
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
+/// Open a connection to upstream, send `Listen`, and consume the handshake
+/// `Result` frame so only attach/detach frames remain.
+async fn open_upstream_listen(addr: &UsbmuxdAddr) -> Result<Box<dyn idevice::ReadWrite>, String> {
+    let mut up = upstream::connect(addr).await?;
+    let mut p = plist::Dictionary::new();
+    p.insert("MessageType".into(), "Listen".into());
+    let listen_pkt: Vec<u8> = RawPacket::new(p, 1, 8, 0).into();
+    up.write_all(&listen_pkt)
+        .await
+        .map_err(|e| format!("write Listen to upstream: {e:?}"))?;
+    upstream::read_frame(&mut *up)
+        .await
+        .map_err(|e| format!("read upstream Listen result: {e:?}"))?;
+    Ok(up)
+}
+
+/// Await the next upstream frame, or never resolve when there is no upstream
+/// subscription (so the `select!` branch stays idle in non-shim mode).
+async fn next_upstream(
+    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
+) -> Option<Vec<u8>> {
+    match rx {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
     }
 }

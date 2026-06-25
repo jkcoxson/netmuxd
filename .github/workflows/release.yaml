@@ -155,7 +155,7 @@ jobs:
           version: ${{ steps.version.outputs.version }}
           maintainer: "jkcoxson"
           arch: ${{ matrix.deb_arch }}
-          depends: "libusb-1.0-0, usbmuxd, libimobiledevice6, libavahi-compat-libdnssd1, avahi-daemon, libcap2-bin"
+          depends: "libusb-1.0-0, usbmuxd, libimobiledevice, libavahi-compat-libdnssd1, avahi-daemon, libcap2-bin"
           homepage: "https://github.com/jkcoxson/netmuxd"
           section: "net"
           priority: "optional"

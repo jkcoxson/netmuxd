@@ -3,7 +3,7 @@
 
 use std::io::{Read, Write};
 
-mod raw_packet;
+use netmuxd::raw_packet;
 
 const SERVICE_NAME: &str = "apple-mobdev2";
 const SERVICE_PROTOCOL: &str = "tcp";

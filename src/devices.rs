@@ -28,65 +28,76 @@ impl From<&MuxerDevice> for plist::Dictionary {
             device.connection_type.clone().into(),
         );
         p.insert("DeviceID".into(), device.device_id.into());
-        if device.connection_type == "Network" {
-            p.insert(
-                "EscapedFullServiceName".into(),
-                device
-                    .service_name
-                    .clone()
-                    .expect("Network device, but no service name")
-                    .into(),
-            );
-        }
         p.insert("InterfaceIndex".into(), device.interface_index.into());
+        p.insert("SerialNumber".into(), device.serial_number.clone().into());
 
-        // Reassemble the network address back into bytes
-        if device.connection_type == "Network" {
-            let mut data = [0u8; 152];
-            match device
-                .network_address
-                .expect("Network device, but no address")
-            {
-                IpAddr::V4(ip_addr) => {
-                    data[0] = 0x02;
-                    data[1] = 0x00;
-                    data[2] = 0x00;
-                    data[3] = 0x00;
-                    let mut i = 4;
-                    for byte in ip_addr.octets() {
-                        data[i] = byte;
-                        i += 1;
+        match device.connection_type.as_str() {
+            "Network" => {
+                p.insert(
+                    "EscapedFullServiceName".into(),
+                    device
+                        .service_name
+                        .clone()
+                        .expect("Network device, but no service name")
+                        .into(),
+                );
+
+                let bsd_sockaddr = cfg!(any(
+                    target_os = "macos",
+                    target_os = "ios",
+                    target_os = "freebsd",
+                    target_os = "netbsd",
+                    target_os = "openbsd",
+                    target_os = "dragonfly",
+                ));
+
+                let mut data = [0u8; 152];
+                match device
+                    .network_address
+                    .expect("Network device, but no address")
+                {
+                    IpAddr::V4(ip_addr) => {
+                        if bsd_sockaddr {
+                            data[0] = 0x10; // sa_len = sizeof(sockaddr_in) = 16
+                            data[1] = 0x02; // sa_family = AF_INET
+                        } else {
+                            // sa_family is a u16 starting at byte 0.
+                            data[0] = 0x02;
+                            data[1] = 0x00;
+                        }
+                        // bytes 2..4 = port, left zero
+                        data[4..8].copy_from_slice(&ip_addr.octets());
+                    }
+                    IpAddr::V6(ip_addr) => {
+                        if bsd_sockaddr {
+                            data[0] = 0x1C; // sa_len = sizeof(sockaddr_in6) = 28
+                            data[1] = 0x1E; // sa_family = AF_INET6 (BSD = 30)
+                        } else {
+                            // Linux AF_INET6 = 10.
+                            data[0] = 0x0A;
+                            data[1] = 0x00;
+                        }
+                        // bytes 2..4 = port, 4..8 = flowinfo, all zero
+                        data[8..24].copy_from_slice(&ip_addr.octets());
+                        // bytes 24..28 = scope_id, left zero
                     }
                 }
-                IpAddr::V6(ip_addr) => {
-                    data[0] = 0x1E;
-                    data[1] = 0x00;
-                    data[2] = 0x00;
-                    data[3] = 0x00;
-                    data[4] = 0x00;
-                    data[5] = 0x00;
-                    data[6] = 0x00;
-                    data[7] = 0x00;
-                    let mut i = 8;
-                    for byte in ip_addr.octets() {
-                        data[i] = byte;
-                        i += 1;
-                    }
+                p.insert("NetworkAddress".into(), plist::Value::Data(data.to_vec()));
+            }
+            "USB" => {
+                if let Some(speed) = device.connection_speed {
+                    p.insert("ConnectionSpeed".into(), speed.into());
+                }
+                if let Some(location) = device.location_id {
+                    p.insert("LocationID".into(), location.into());
+                }
+                if let Some(pid) = device.product_id {
+                    p.insert("ProductID".into(), pid.into());
                 }
             }
-            // Start from the back and fill with zeros
-            let mut i = data.len() - 2;
-            while i > 0 {
-                if data[i] != 0 {
-                    break;
-                }
-                data[i] = 0;
-                i -= 1;
-            }
-            p.insert("NetworkAddress".into(), plist::Value::Data(data.to_vec()));
+            _ => {}
         }
 
-        p.insert("SerialNumber".into(), device.serial_number.clone().into());
         p
     }
 }

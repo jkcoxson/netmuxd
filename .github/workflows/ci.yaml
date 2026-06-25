@@ -18,6 +18,13 @@ jobs:
             os: ubuntu-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            windows_dll_dir: amd64
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            windows_dll_dir: x86
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            windows_dll_dir: arm64
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -30,16 +37,44 @@ jobs:
       - uses: taiki-e/setup-cross-toolchain-action@v1
         with:
           target: ${{ matrix.target }}
+      - name: Add LLVM to PATH (Windows ARM64)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\LLVM\bin"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ hashFiles('vendor-manifest.toml') }}
+      # Cache the extracted vendor/ tree so we don't re-download libusbK
+      # + libwdi binaries on every run. Keyed by manifest content so
+      # bumping the version invalidates automatically.
+      - name: Cache vendor bundle
+        if: contains(matrix.target, 'windows')
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/libusbK/lib
+            vendor/libusbK/dll
+            vendor/libwdi/lib
+            vendor/.vendor-stamp-*
+          key: vendor-${{ matrix.target }}-${{ hashFiles('vendor-manifest.toml') }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin netmuxd
+      - name: Stage artifacts (Windows)
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/netmuxd.exe" -Destination dist/
+          Copy-Item "vendor/libusbK/dll/${{ matrix.windows_dll_dir }}/libusbK.dll" -Destination dist/
+          Copy-Item "vendor/libusbK/dll/${{ matrix.windows_dll_dir }}/libusb0.dll" -Destination dist/
+      - name: Stage artifacts (non-Windows)
+        if: "!contains(matrix.target, 'windows')"
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/netmuxd dist/
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: netmuxd-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/netmuxd
-            target/${{ matrix.target }}/release/netmuxd.exe
+          path: dist/
           if-no-files-found: error

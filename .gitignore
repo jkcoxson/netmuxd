@@ -2,3 +2,20 @@
 run.sh
 .DS_Store
 output
+
+# libusbK SDK: check in headers, ignore prebuilt binaries.
+vendor/libusbK/bin/
+vendor/libusbK/lib/
+vendor/libusbK/dll/
+
+# libwdi: check in header, ignore the prebuilt static lib.
+vendor/libwdi/lib/
+
+# Stamp files written by build.rs after a successful vendor download.
+vendor/.vendor-stamp-*
+
+# Local vendor zip cache (used during bundle production, not committed).
+/vendor-bundles/
+
+/wasm-test/target
+/wasm-test/dist

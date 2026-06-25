@@ -4,8 +4,6 @@
 use colored::Colorize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-mod raw_packet;
-
 #[tokio::main]
 async fn main() {
     let mut port = 27015;

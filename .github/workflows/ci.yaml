@@ -201,9 +201,13 @@ jobs:
           desc: "Network usbmuxd companion for iOS devices."
           compress_type: "xz"
 
+      - name: Rename deb package
+        run: |
+          mv "${{ steps.build_deb.outputs.file_name }}" "netmuxd_${{ steps.version.outputs.version }}_${{ matrix.deb_arch }}_${{ matrix.ubuntu_codename }}.deb"
+
       - name: Upload deb to existing GitHub Actions Artifact
         uses: actions/upload-artifact@v4
         with:
           name: netmuxd-${{ matrix.deb_arch }}-${{ matrix.ubuntu_codename }}
-          path: ${{ steps.build_deb.outputs.file_name }}
+          path: "netmuxd_${{ steps.version.outputs.version }}_${{ matrix.deb_arch }}_${{ matrix.ubuntu_codename }}.deb"
           if-no-files-found: error

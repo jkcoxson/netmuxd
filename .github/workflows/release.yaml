@@ -209,12 +209,15 @@ jobs:
           priority: "optional"
           desc: "Network usbmuxd companion for iOS devices."
           compress_type: "xz"
+      - name: Rename deb package
+        run: |
+          mv "${{ steps.build_deb.outputs.file_name }}" "netmuxd_${{ steps.version.outputs.version }}_${{ matrix.deb_arch }}_${{ matrix.ubuntu_codename }}.deb"
 
       - name: Upload deb to existing GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${GITHUB_REF_NAME}" \
-            "${{ steps.build_deb.outputs.file_name }}" \
+            "netmuxd_${{ steps.version.outputs.version }}_${{ matrix.deb_arch }}_${{ matrix.ubuntu_codename }}.deb" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber

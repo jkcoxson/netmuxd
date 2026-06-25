@@ -78,3 +78,74 @@ jobs:
           name: netmuxd-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
+  build-packages-ubuntu:
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        run: |
+          rustup target add ${{ matrix.target }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libusb-1.0-0-dev libavahi-compat-libdnssd-dev
+
+      - name: Build netmuxd
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare .deb package
+        run: |
+          rm -rf package/deb
+
+          mkdir -p package/deb/usr/bin
+          mkdir -p package/deb/DEBIAN
+          mkdir -p package/deb/lib/systemd/system
+
+          install -m 0755 target/${{ matrix.target }}/release/netmuxd package/deb/usr/bin/netmuxd
+
+          install -m 0644 package/ubuntu/netmuxd.service package/deb/lib/systemd/system/netmuxd.service
+          install -m 0755 package/ubuntu/postinst package/deb/DEBIAN/postinst
+          install -m 0755 package/ubuntu/prerm package/deb/DEBIAN/prerm
+          install -m 0755 package/ubuntu/postrm package/deb/DEBIAN/postrm
+
+      - name: Normalize version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build deb package
+        id: build_deb
+        uses: jiro4989/build-deb-action@v4
+        with:
+          package: netmuxd
+          package_root: package/deb
+          version: ${{ steps.version.outputs.version }}
+          maintainer: "jkcoxson"
+          arch: ${{ matrix.deb_arch }}
+          depends: "libusb-1.0-0, usbmuxd, libimobiledevice6, libavahi-compat-libdnssd1, avahi-daemon, libcap2-bin"
+          homepage: "https://github.com/jkcoxson/netmuxd"
+          section: "net"
+          priority: "optional"
+          desc: "Network usbmuxd companion for iOS devices."
+          compress_type: "xz"
+
+      - name: Upload deb to existing GitHub Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: netmuxd-${{ matrix.deb_arch }}
+          path: ${{ steps.build_deb.outputs.file_name }}
+          if-no-files-found: error

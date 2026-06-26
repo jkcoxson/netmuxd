@@ -151,12 +151,20 @@ async fn main() {
     }
 
     if config.use_usb {
-        let manager_sender = manager_sender.clone();
-        let config = config.clone();
-        tokio::spawn(async move {
-            daemon::discover(manager_sender, config).await;
-            error!("USB discovery stopped");
-        });
+        if daemon::usb_available() {
+            let manager_sender = manager_sender.clone();
+            let config = config.clone();
+            tokio::spawn(async move {
+                daemon::discover(manager_sender, config).await;
+                error!("USB discovery stopped");
+            });
+        } else {
+            warn!(
+                "USB support is enabled but libusbK.dll was not found; continuing without USB. \
+                 Network/mDNS devices are unaffected. Place libusbK.dll next to netmuxd.exe \
+                 (or pass --disable-usb to silence this) to enable USB."
+            );
+        }
     }
 
     if config.use_mdns {

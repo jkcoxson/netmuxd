@@ -1,6 +1,6 @@
 [package]
 name = "netmuxd"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "LGPL-2.1-only"
 description = "A daemon for muxing iOS device interfaces"

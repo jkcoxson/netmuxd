@@ -51,7 +51,7 @@ impl From<&MuxerDevice> for plist::Dictionary {
                     target_os = "dragonfly",
                 ));
 
-                let mut data = [0u8; 152];
+                let mut data = [0u8; 128];
                 match device
                     .network_address
                     .expect("Network device, but no address")

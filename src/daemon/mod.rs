@@ -36,6 +36,17 @@ mod nusb_backend;
 pub(crate) const PID_RANGE_LOW: u16 = *PID_RANGE.start();
 pub(crate) const PID_RANGE_HIGH: u16 = *PID_RANGE.end();
 
+pub fn usb_available() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        crate::libusbk::dll_available()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
+    }
+}
+
 /// Entry point. Dispatches to the platform's USB backend.
 pub async fn discover(sender: ManagerSender, config: NetmuxdConfig) {
     #[cfg(not(target_os = "windows"))]

@@ -55,6 +55,9 @@ fn main() {
     println!("cargo:rustc-link-search=native={libusbk_root}/lib/{arch_dir}");
     println!("cargo:rustc-link-lib=dylib=libusbK");
 
+    println!("cargo:rustc-link-arg=delayimp.lib");
+    println!("cargo:rustc-link-arg=/DELAYLOAD:libusbK.dll");
+
     let libwdi_root =
         libwdi_env.unwrap_or_else(|| format!("{}/vendor/libwdi", manifest_dir.display()));
     println!("cargo:rustc-link-search=native={libwdi_root}/lib/{arch_dir}");

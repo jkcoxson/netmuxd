@@ -12,7 +12,7 @@ Run ``cargo build --release`` to generate binaries. They will be generated at ``
 
 ## USB support
 
-netmuxd talks to iOS devices directly over USB via libusb. There is no
+netmuxd talks to iOS devices directly over USB via nusb. There is no
 dependency on a separate usbmuxd daemon: plug a device in and the daemon
 will discover it and start serving the usbmuxd protocol on its Unix
 socket / TCP port.

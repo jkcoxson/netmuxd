@@ -29,6 +29,8 @@ pub(crate) use crate::usb::apple::{
 
 // Backend modules.
 #[cfg(target_os = "windows")]
+mod apple_mux_backend;
+#[cfg(all(target_os = "windows", feature = "libusbk"))]
 mod libusbk_backend;
 #[cfg(not(target_os = "windows"))]
 mod nusb_backend;
@@ -36,13 +38,26 @@ mod nusb_backend;
 pub(crate) const PID_RANGE_LOW: u16 = *PID_RANGE.start();
 pub(crate) const PID_RANGE_HIGH: u16 = *PID_RANGE.end();
 
-pub fn usb_available() -> bool {
+pub fn usb_available(apple_mux: bool) -> bool {
     #[cfg(target_os = "windows")]
     {
-        crate::libusbk::dll_available()
+        // The apple_mux backend (the default) rides Apple's installed WinUSB
+        // driver and needs no libusbK.dll of ours.
+        if apple_mux {
+            return true;
+        }
+        #[cfg(feature = "libusbk")]
+        {
+            crate::libusbk::dll_available()
+        }
+        #[cfg(not(feature = "libusbk"))]
+        {
+            false
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = apple_mux;
         true
     }
 }
@@ -52,7 +67,24 @@ pub async fn discover(sender: ManagerSender, config: NetmuxdConfig) {
     #[cfg(not(target_os = "windows"))]
     nusb_backend::run(sender, config).await;
     #[cfg(target_os = "windows")]
-    libusbk_backend::run(sender, config).await;
+    {
+        // Default: the apple_mux backend (rides Apple's installed WinUSB
+        // stack, no driver of our own). `--libusbk` opts into the legacy
+        // libusbK backend, when compiled in.
+        if config.apple_mux {
+            apple_mux_backend::run(sender, config).await;
+        } else {
+            #[cfg(feature = "libusbk")]
+            libusbk_backend::run(sender, config).await;
+            #[cfg(not(feature = "libusbk"))]
+            {
+                let _ = (sender, config);
+                log::error!(
+                    "--libusbk was requested but this build has no libusbK backend compiled in"
+                );
+            }
+        }
+    }
 }
 
 // --- shared helpers ----------------------------------------------------

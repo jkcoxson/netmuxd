@@ -35,8 +35,18 @@ pub mod pairing_file;
 pub mod upstream;
 
 #[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+pub mod apple_mux;
+#[cfg(all(
+    target_os = "windows",
+    not(target_arch = "wasm32"),
+    feature = "libusbk"
+))]
 pub mod libusbk;
-#[cfg(all(target_os = "windows", not(target_arch = "wasm32")))]
+#[cfg(all(
+    target_os = "windows",
+    not(target_arch = "wasm32"),
+    feature = "libusbk"
+))]
 pub mod libwdi;
 
 /// Spawn a `'static + Send` future on whatever executor is current.

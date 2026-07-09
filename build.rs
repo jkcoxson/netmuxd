@@ -25,6 +25,11 @@ fn main() {
         return;
     }
 
+    // libusbK + libwdi are only needed for the (opt-in) libusbK backend
+    if std::env::var_os("CARGO_FEATURE_LIBUSBK").is_none() {
+        return;
+    }
+
     println!("cargo:rerun-if-changed=vendor-manifest.toml");
     println!("cargo:rerun-if-env-changed=LIBUSBK_DIR");
     println!("cargo:rerun-if-env-changed=LIBWDI_DIR");

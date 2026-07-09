@@ -23,8 +23,8 @@ use netmuxd::{
     upstream,
 };
 
-#[cfg(target_os = "windows")]
-use netmuxd::{libusbk, libwdi};
+#[cfg(all(target_os = "windows", feature = "libusbk"))]
+use netmuxd::libwdi;
 
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + ?Sized> AsyncReadWrite for T {}
@@ -38,7 +38,7 @@ use tokio::{
 async fn main() {
     // `install` / `uninstall` / `export-driver` are one-shot driver-
     // management subcommands that don't run the daemon.
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "libusbk"))]
     match std::env::args().nth(1).as_deref() {
         Some("install") => std::process::exit(libwdi::run_install()),
         Some("uninstall") => std::process::exit(libwdi::run_uninstall()),
@@ -151,7 +151,7 @@ async fn main() {
     }
 
     if config.use_usb {
-        if daemon::usb_available() {
+        if daemon::usb_available(config.apple_mux) {
             let manager_sender = manager_sender.clone();
             let config = config.clone();
             tokio::spawn(async move {
@@ -160,9 +160,10 @@ async fn main() {
             });
         } else {
             warn!(
-                "USB support is enabled but libusbK.dll was not found; continuing without USB. \
-                 Network/mDNS devices are unaffected. Place libusbK.dll next to netmuxd.exe \
-                 (or pass --disable-usb to silence this) to enable USB."
+                "USB is enabled but the libusbK backend is unavailable (--libusbk was passed but \
+                 libusbK.dll was not found, or this build has no libusbK support); continuing \
+                 without USB. Network/mDNS devices are unaffected. Drop --libusbk to use the default \
+                 Apple-driver backend, or place libusbK.dll next to netmuxd.exe."
             );
         }
     }

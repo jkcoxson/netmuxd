@@ -1,6 +1,6 @@
 [package]
 name = "netmuxd"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "LGPL-2.1-only"
 description = "A daemon for muxing iOS device interfaces"
@@ -91,7 +91,12 @@ getrandom_04 = { package = "getrandom", version = "0.4", default-features = fals
 ], optional = true }
 
 [features]
-default = []
+default = ["libusbk"]
+# Windows: the legacy libusbK backend + libwdi driver installer (`install` /
+# `export-driver`). Pulls the vendor bundles in build.rs. Disable with
+# `--no-default-features` for an Apple-driver-only build that needs no vendor
+# bundles.
+libusbk = []
 # Enables wasm32-unknown-unknown support for the library surface
 # (`usb_mux`, `devices`, plus the `crate::spawn` shim).
 # Consumers must bring their own transport: enumerate via nusb directly

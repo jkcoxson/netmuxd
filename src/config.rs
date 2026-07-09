@@ -15,6 +15,7 @@ pub struct NetmuxdConfig {
     pub use_unix: bool,
     pub use_mdns: bool,
     pub use_usb: bool,
+    pub apple_mux: bool,
     pub upstream: Option<UsbmuxdAddr>,
     #[cfg(unix)]
     pub socket_path: String,
@@ -34,6 +35,7 @@ impl NetmuxdConfig {
             use_unix: true,
             use_mdns: true,
             use_usb: true,
+            apple_mux: true,
             upstream: None,
             #[cfg(unix)]
             socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -83,6 +85,11 @@ impl NetmuxdConfig {
                     res.use_usb = false;
                     i += 1;
                 }
+                #[cfg(all(windows, feature = "libusbk"))]
+                "--libusbk" => {
+                    res.apple_mux = false;
+                    i += 1;
+                }
                 "--disable-heartbeat" => {
                     res.use_heartbeat = false;
                     i += 1;
@@ -112,14 +119,16 @@ impl NetmuxdConfig {
                     println!("Usage:");
                     #[cfg(unix)]
                     println!("  netmuxd [options]");
-                    #[cfg(windows)]
+                    #[cfg(all(windows, feature = "libusbk"))]
                     {
                         println!("  netmuxd [argument] [options]");
                         println!("Arguments:");
-                        println!("  install (installs the Windows driver)");
-                        println!("  uninstall (uninstalls the Windows driver)");
+                        println!("  install (installs the libusbK driver)");
+                        println!("  uninstall (uninstalls the libusbK driver)");
                         println!("  export-driver (exports the driver files for signing)");
                     }
+                    #[cfg(all(windows, not(feature = "libusbk")))]
+                    println!("  netmuxd [options]");
                     println!("Options:");
                     println!("  -p, --port <port>");
                     println!("  --host <host>");
@@ -129,6 +138,27 @@ impl NetmuxdConfig {
                     println!("  --disable-unix");
                     println!("  --disable-mdns");
                     println!("  --disable-usb");
+                    #[cfg(all(windows, feature = "libusbk"))]
+                    {
+                        println!(
+                            "  --libusbk                  (Windows: use the legacy libusbK backend instead of the"
+                        );
+                        println!(
+                            "                              default Apple-driver backend. Requires libusbK.dll and the"
+                        );
+                        println!(
+                            "                              netmuxd-installed driver, see the `install` command. By"
+                        );
+                        println!(
+                            "                              default netmuxd drives iOS devices through Apple's installed"
+                        );
+                        println!(
+                            "                              WinUSB stack, which needs no libusbK.dll but requires Apple's"
+                        );
+                        println!(
+                            "                              Mobile Device Support / Apple Devices app installed.)"
+                        );
+                    }
                     println!(
                         "  --upstream-usbmuxd [addr]  (shim mode: forward USB/most requests to this muxer;"
                     );

@@ -17,7 +17,18 @@ dependency on a separate usbmuxd daemon: plug a device in and the daemon
 will discover it and start serving the usbmuxd protocol on its Unix
 socket / TCP port.
 
-## Windows: install the driver
+## Windows
+
+There are two backends for Windows because Windows is a garbage operating
+system with a garbage driver model.
+
+### Apple's mux
+
+By default, netmuxd will connect to Apple's kernel driver like Apple Mobile
+Device Services does. This will evict iTunes etc. No installation is needed,
+it works a lot better than libusb.
+
+### libwdi/libusb 
 
 Apple's stock USB driver claims the iOS interface, so libusb can't open
 it. netmuxd ships a one-shot installer that binds the libusb0 kernel

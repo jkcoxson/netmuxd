@@ -89,7 +89,9 @@ impl From<&MuxerDevice> for plist::Dictionary {
                     p.insert("ConnectionSpeed".into(), speed.into());
                 }
                 if let Some(location) = device.location_id {
-                    p.insert("LocationID".into(), location.into());
+                    // double cast it so MobileDevice.dll doesn't segfault on its crappy error
+                    // handling code
+                    p.insert("LocationID".into(), (location as u32 as u64).into());
                 }
                 if let Some(pid) = device.product_id {
                     p.insert("ProductID".into(), pid.into());

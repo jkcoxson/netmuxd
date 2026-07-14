@@ -28,6 +28,11 @@ By default, netmuxd will connect to Apple's kernel driver like Apple Mobile
 Device Services does. This will evict iTunes etc. No installation is needed,
 it works a lot better than libusb.
 
+Apple's own daemon (`AppleMobileDeviceService.exe`) holds the usbmux
+listener on TCP 127.0.0.1:27015.
+Pass `--kill-amds` to terminate it at startup so netmuxd owns
+the device and the listener.
+
 ### libwdi/libusb 
 
 Apple's stock USB driver claims the iOS interface, so libusb can't open

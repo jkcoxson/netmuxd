@@ -16,6 +16,8 @@ pub struct NetmuxdConfig {
     pub use_mdns: bool,
     pub use_usb: bool,
     pub apple_mux: bool,
+    #[cfg(target_os = "windows")]
+    pub kill_amds: bool,
     pub upstream: Option<UsbmuxdAddr>,
     #[cfg(unix)]
     pub socket_path: String,
@@ -36,6 +38,8 @@ impl NetmuxdConfig {
             use_mdns: true,
             use_usb: true,
             apple_mux: true,
+            #[cfg(target_os = "windows")]
+            kill_amds: false,
             upstream: None,
             #[cfg(unix)]
             socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -88,6 +92,11 @@ impl NetmuxdConfig {
                 #[cfg(all(windows, feature = "libusbk"))]
                 "--libusbk" => {
                     res.apple_mux = false;
+                    i += 1;
+                }
+                #[cfg(target_os = "windows")]
+                "--kill-amds" => {
+                    res.kill_amds = true;
                     i += 1;
                 }
                 "--disable-heartbeat" => {
@@ -157,6 +166,18 @@ impl NetmuxdConfig {
                         );
                         println!(
                             "                              Mobile Device Support / Apple Devices app installed.)"
+                        );
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        println!(
+                            "  --kill-amds                (Windows: find and terminate Apple Mobile Device Service"
+                        );
+                        println!(
+                            "                              (AppleMobileDeviceService.exe) at startup so netmuxd owns the"
+                        );
+                        println!(
+                            "                              device and the :27015 listener before we bind it.)"
                         );
                     }
                     println!(

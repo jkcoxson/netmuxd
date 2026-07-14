@@ -6,6 +6,7 @@
 
 #![cfg(target_os = "windows")]
 
+pub mod amds;
 pub mod device;
 pub mod ffi;
 pub mod io;

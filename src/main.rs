@@ -60,6 +60,16 @@ async fn main() {
     let config = NetmuxdConfig::collect();
     info!("Collected arguments, proceeding");
 
+    // Terminate Apple's daemon before we bind anything
+    #[cfg(target_os = "windows")]
+    if config.kill_amds {
+        match tokio::task::spawn_blocking(netmuxd::apple_mux::amds::kill_amds).await {
+            Ok(0) => info!("--kill-amds: no AppleMobileDeviceService process found"),
+            Ok(n) => info!("--kill-amds: terminated {n} AppleMobileDeviceService process(es)"),
+            Err(e) => warn!("--kill-amds task panicked: {e:?}"),
+        }
+    }
+
     let manager_sender = new_manager_thread(&config);
 
     if let Some(host) = config.host.clone() {

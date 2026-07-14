@@ -105,6 +105,8 @@ pub struct BulkWriter {
     ep: Endpoint<Bulk, Out>,
     max_out: usize,
     in_flight: bool,
+    bytes_since_flush: usize,
+    zlp_sent: bool,
 }
 
 impl BulkWriter {
@@ -113,6 +115,8 @@ impl BulkWriter {
             ep,
             max_out: DEFAULT_MAX_OUT,
             in_flight: false,
+            bytes_since_flush: 0,
+            zlp_sent: false,
         }
     }
 
@@ -150,14 +154,31 @@ impl AsyncWrite for BulkWriter {
         out.extend_from_slice(&buf[..n]);
         self.ep.submit(out);
         self.in_flight = true;
+        self.bytes_since_flush += n;
+        self.zlp_sent = false;
         Poll::Ready(Ok(n))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.as_mut().poll_drain(cx)
+        loop {
+            ready!(self.as_mut().poll_drain(cx))?;
+            if !self.zlp_sent
+                && self.bytes_since_flush > 0
+                && self
+                    .bytes_since_flush
+                    .is_multiple_of(self.ep.max_packet_size())
+            {
+                self.zlp_sent = true;
+                self.ep.submit(Buffer::new(0));
+                self.in_flight = true;
+                continue;
+            }
+            self.bytes_since_flush = 0;
+            return Poll::Ready(Ok(()));
+        }
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.as_mut().poll_drain(cx)
+        self.as_mut().poll_flush(cx)
     }
 }

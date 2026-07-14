@@ -35,11 +35,12 @@ impl AppleMuxReader {
         }
     }
 
-    fn spawn_read(&self) -> JoinHandle<io::Result<Vec<u8>>> {
+    fn spawn_read(&self, want: usize) -> JoinHandle<io::Result<Vec<u8>>> {
         let handle = self.handle.clone();
         let code = ffi::ioctl_read_pipe(self.pipe);
+        let cap = want.clamp(1, READ_CHUNK);
         tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
-            let mut buf = vec![0u8; READ_CHUNK];
+            let mut buf = vec![0u8; cap];
             // The read IOCTL uses the buffer as both in and out (mirrors
             // Apple's Usbmuxio_ReadPipe_SyncF).
             let n = unsafe {
@@ -96,7 +97,7 @@ impl AsyncRead for AppleMuxReader {
                     }
                 }
             } else {
-                me.pending = Some(me.spawn_read());
+                me.pending = Some(me.spawn_read(buf.remaining()));
             }
         }
     }
@@ -111,15 +112,17 @@ impl Drop for AppleMuxReader {
 pub struct AppleMuxWriter {
     handle: Arc<DeviceHandle>,
     pipe: u8,
+    max_packet: u16,
     pending: Option<JoinHandle<io::Result<usize>>>,
     pending_len: usize,
 }
 
 impl AppleMuxWriter {
-    pub(crate) fn new(handle: Arc<DeviceHandle>, pipe: u8) -> Self {
+    pub(crate) fn new(handle: Arc<DeviceHandle>, pipe: u8, max_packet: u16) -> Self {
         Self {
             handle,
             pipe,
+            max_packet,
             pending: None,
             pending_len: 0,
         }
@@ -128,17 +131,31 @@ impl AppleMuxWriter {
     fn spawn_write(&self, bytes: Vec<u8>) -> JoinHandle<io::Result<usize>> {
         let handle = self.handle.clone();
         let code = ffi::ioctl_write_pipe(self.pipe);
+        let max_packet = self.max_packet as usize;
         tokio::task::spawn_blocking(move || -> io::Result<usize> {
+            let len = bytes.len();
             let n = unsafe {
                 ioctl_sync(
                     handle.raw(),
                     code,
                     bytes.as_ptr() as *const c_void,
-                    bytes.len() as u32,
+                    len as u32,
                     bytes.as_ptr() as *mut c_void,
-                    bytes.len() as u32,
+                    len as u32,
                 )?
             };
+            if max_packet > 0 && len > 0 && len.is_multiple_of(max_packet) {
+                unsafe {
+                    ioctl_sync(
+                        handle.raw(),
+                        code,
+                        bytes.as_ptr() as *const c_void,
+                        0,
+                        bytes.as_ptr() as *mut c_void,
+                        0,
+                    )?;
+                }
+            }
             Ok(n as usize)
         })
     }

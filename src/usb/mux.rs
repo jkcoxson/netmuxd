@@ -103,9 +103,8 @@ struct Connection {
     rx_win: u32,
     /// Pending oneshot for the original Connect call (resolved on SYN/ACK or RST).
     connect_reply: Option<oneshot::Sender<io::Result<tokio::io::DuplexStream>>>,
-    /// Our internal half of the duplex pair. Reader half lives in a
-    /// pump task that forwards bytes onto the data channel.
-    write_half: Option<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+    rx_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    rx_buffered: u32,
     /// User bytes waiting on device-side TCP window space. Flushed in
     /// chunks bounded by `MAX_PAYLOAD` and the device's advertised
     /// window each time `rx_ack`/`rx_win` move.
@@ -163,7 +162,7 @@ async fn run<R, W>(
     mut cmd_rx: mpsc::Receiver<Command>,
 ) -> io::Result<()>
 where
-    R: AsyncRead + Send + Unpin,
+    R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin,
 {
     // The handshake runs in v1 framing (8-byte header, no magic);
@@ -172,7 +171,7 @@ where
     send_version(&mut writer, &mut state, 2, 0).await?;
 
     // Wait for the device's version response (still v1).
-    let pkt = read_packet(&mut reader, &mut state).await?;
+    let pkt = read_frame(&mut reader).await?;
     let parsed = parse_header(&pkt, state.version)?;
     if parsed.protocol != Proto::Version as u32 {
         return Err(io::Error::other(format!(
@@ -197,6 +196,25 @@ where
     // SETUP packet kicks the device into mux mode (v2 framing, resets seq).
     send_raw(&mut writer, &mut state, Proto::Setup, &[], &[0x07], true).await?;
 
+    let (pkt_tx, mut pkt_rx) = mpsc::channel::<io::Result<Vec<u8>>>(16);
+    let (_shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+    crate::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                res = read_frame(&mut reader) => {
+                    let stop = res.is_err();
+                    if pkt_tx.send(res).await.is_err() {
+                        break;
+                    }
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     let mut connections: HashMap<u16, Connection> = HashMap::new();
     let mut next_sport: u16 = 1;
 
@@ -204,6 +222,8 @@ where
     // writes here as (sport, bytes). None means the user closed the
     // duplex (we should send FIN/RST and tear down).
     let (tx_data, mut rx_data) = mpsc::channel::<(u16, Option<Vec<u8>>)>(64);
+
+    let (drain_tx, mut drain_rx) = mpsc::unbounded_channel::<(u16, u32)>();
 
     loop {
         tokio::select! {
@@ -224,7 +244,8 @@ where
                             rx_ack: 0,
                             rx_win: 0,
                             connect_reply: Some(reply),
-                            write_half: None,
+                            rx_tx: None,
+                            rx_buffered: 0,
                             pending_tx: VecDeque::new(),
                         };
                         if let Err(e) = send_tcp(&mut writer, &mut state, &conn, tcp_flags::SYN, &[]).await {
@@ -263,14 +284,36 @@ where
                     }
                 }
             }
-            res = read_packet(&mut reader, &mut state) => {
+            drained = drain_rx.recv() => {
+                let Some((sport, n)) = drained else { continue; };
+                if let Some(conn) = connections.get_mut(&sport) {
+                    let before = RX_WINDOW.saturating_sub(conn.rx_buffered);
+                    conn.rx_buffered = conn.rx_buffered.saturating_sub(n);
+                    let after = RX_WINDOW.saturating_sub(conn.rx_buffered);
+                    if conn.state == ConnState::Connected
+                        && before < MAX_PAYLOAD as u32
+                        && after >= MAX_PAYLOAD as u32
+                        && let Err(e) = send_tcp(&mut writer, &mut state, conn, tcp_flags::ACK, &[]).await
+                    {
+                        warn!("dev={device_id} window-update ACK failed sport={sport}: {e:?}");
+                    }
+                }
+            }
+            res = pkt_rx.recv() => {
                 let pkt = match res {
-                    Ok(p) => p,
-                    Err(e) => {
+                    Some(Ok(p)) => p,
+                    Some(Err(e)) => {
                         warn!("dev={device_id} read failure, exiting: {e:?}");
                         break;
                     }
+                    None => {
+                        debug!("dev={device_id} reader task ended");
+                        break;
+                    }
                 };
+                if state.version >= 2 && pkt.len() >= 14 {
+                    state.rx_seq = u16::from_be_bytes(pkt[12..14].try_into().unwrap());
+                }
                 if let Err(e) = handle_incoming(
                     device_id,
                     &pkt,
@@ -278,6 +321,7 @@ where
                     &mut writer,
                     &mut state,
                     &tx_data,
+                    &drain_tx,
                 ).await {
                     warn!("dev={device_id} packet handler error: {e:?}");
                 }
@@ -299,10 +343,7 @@ where
 fn teardown(connections: &mut HashMap<u16, Connection>, sport: u16) {
     if let Some(mut conn) = connections.remove(&sport) {
         conn.state = ConnState::Dead;
-        // Dropping write_half closes the duplex from our side, which
-        // the user observes as EOF on read. The pump task will see
-        // the duplex close on its read and exit.
-        drop(conn.write_half.take());
+        drop(conn.rx_tx.take());
         if let Some(reply) = conn.connect_reply.take() {
             let _ = reply.send(Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
@@ -319,6 +360,7 @@ async fn handle_incoming<W>(
     writer: &mut W,
     state: &mut MuxState,
     tx_data: &mpsc::Sender<(u16, Option<Vec<u8>>)>,
+    drain_tx: &mpsc::UnboundedSender<(u16, u32)>,
 ) -> io::Result<()>
 where
     W: AsyncWrite + Send + Unpin,
@@ -355,7 +397,8 @@ where
                         rx_ack: 0,
                         rx_win: 0,
                         connect_reply: None,
-                        write_half: None,
+                        rx_tx: None,
+                        rx_buffered: 0,
                         pending_tx: VecDeque::new(),
                     };
                     let _ = send_tcp(writer, state, &anon, tcp_flags::RST, &[]).await;
@@ -374,14 +417,13 @@ where
                     send_tcp(writer, state, conn, tcp_flags::ACK, &[]).await?;
                     conn.state = ConnState::Connected;
 
-                    // Build the duplex pair, hand one half to the user,
-                    // keep the other half here. Spawn a pump task that
-                    // reads from the user-side reader and forwards as
-                    // (sport, bytes) to the main loop.
                     let (user_side, our_side) = tokio::io::duplex(DUPLEX_BUF);
-                    let (mut our_read, our_write) = tokio::io::split(our_side);
-                    conn.write_half = Some(our_write);
+                    let (mut our_read, mut our_write) = tokio::io::split(our_side);
+                    let (rx_tx, mut rx_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                    conn.rx_tx = Some(rx_tx);
                     let sport = conn.sport;
+
+                    // Pump: user -> device.
                     let tx_data = tx_data.clone();
                     crate::spawn(async move {
                         let mut buf = vec![0u8; MAX_PAYLOAD];
@@ -403,6 +445,22 @@ where
                             }
                         }
                     });
+
+                    // Forwarder: device -> user, reporting drained bytes.
+                    let drain_tx = drain_tx.clone();
+                    crate::spawn(async move {
+                        while let Some(chunk) = rx_rx.recv().await {
+                            let n = chunk.len() as u32;
+                            if our_write.write_all(&chunk).await.is_err() {
+                                break;
+                            }
+                            if drain_tx.send((sport, n)).is_err() {
+                                break;
+                            }
+                        }
+                        // Dropping our_write closes the duplex
+                    });
+
                     if let Some(reply) = conn.connect_reply.take() {
                         let _ = reply.send(Ok(user_side));
                     }
@@ -422,20 +480,21 @@ where
                     teardown(connections, our_sport);
                 } else {
                     if !payload.is_empty() {
-                        // Forward to user.
                         let len = payload.len() as u32;
-                        if let Some(w) = conn.write_half.as_mut()
-                            && let Err(e) = w.write_all(payload).await
-                        {
-                            warn!(
-                                "dev={device_id} sport={our_sport} user-side write failed: {e:?}"
-                            );
+                        let delivered = conn
+                            .rx_tx
+                            .as_ref()
+                            .is_some_and(|tx| tx.send(payload.to_vec()).is_ok());
+                        if !delivered {
+                            warn!("dev={device_id} sport={our_sport} user-side gone; resetting");
                             let _ = send_tcp(writer, state, conn, tcp_flags::RST, &[]).await;
                             teardown(connections, our_sport);
                             return Ok(());
                         }
 
+                        conn.rx_buffered = conn.rx_buffered.saturating_add(len);
                         conn.tx_ack = conn.tx_ack.wrapping_add(len);
+                        // The ACK carries the now-shrunk window (see send_tcp).
                         send_tcp(writer, state, conn, tcp_flags::ACK, &[]).await?;
                     }
                     // The packet (payload-bearing or pure ACK) updated
@@ -523,17 +582,16 @@ fn parse_tcp(buf: &[u8]) -> io::Result<ParsedTcp> {
     })
 }
 
-async fn read_packet<R>(reader: &mut R, state: &mut MuxState) -> io::Result<Vec<u8>>
+async fn read_frame<R>(reader: &mut R) -> io::Result<Vec<u8>>
 where
     R: AsyncRead + Send + Unpin,
 {
-    let header_size = mux_header_size(state.version);
-    // Read the first 8 bytes (protocol + length)
+    // Read the first 8 bytes (protocol + length).
     let mut head8 = [0u8; V1_HEADER_SIZE];
     reader.read_exact(&mut head8).await?;
     let protocol = u32::from_be_bytes(head8[0..4].try_into().unwrap());
     let length = u32::from_be_bytes(head8[4..8].try_into().unwrap()) as usize;
-    if length < header_size || length > USB_MTU {
+    if !(V2_HEADER_SIZE..=USB_MTU).contains(&length) {
         let mut tail = [0u8; 32];
         let n = match tokio::time::timeout(
             std::time::Duration::from_millis(50),
@@ -545,9 +603,8 @@ where
             _ => 0,
         };
         return Err(io::Error::other(format!(
-            "implausible mux packet length {length} (header_size={header_size}, \
-             protocol={protocol:#010x}, head={:02x?}, next_{n}={:02x?})",
-            head8,
+            "implausible mux packet length {length} (protocol={protocol:#010x}, \
+             head={head8:02x?}, next_{n}={:02x?})",
             &tail[..n],
         )));
     }
@@ -556,13 +613,7 @@ where
     if length > V1_HEADER_SIZE {
         reader.read_exact(&mut pkt[V1_HEADER_SIZE..]).await?;
     }
-    if state.version >= 2 {
-        state.rx_seq = u16::from_be_bytes(pkt[12..14].try_into().unwrap());
-    }
-    trace!(
-        "read mux pkt: len={length} version={} header_size={header_size}",
-        state.version
-    );
+    trace!("read mux frame: len={length}");
     Ok(pkt)
 }
 
@@ -625,7 +676,11 @@ where
     hdr[8..12].copy_from_slice(&conn.tx_ack.to_be_bytes());
     hdr[12] = (TCP_HEADER_SIZE as u8 / 4) << 4;
     hdr[13] = flags;
-    hdr[14..16].copy_from_slice(&((RX_WINDOW >> 8) as u16).to_be_bytes());
+    // Advertise the receive space still free on this connection so a slow
+    // consumer throttles the device on this stream alone (0 => pause). The
+    // window is a 256-byte-granular u16, matching how we read the device's.
+    let win = RX_WINDOW.saturating_sub(conn.rx_buffered);
+    hdr[14..16].copy_from_slice(&((win >> 8) as u16).to_be_bytes());
     // checksum + urgent ptr left zero (the device doesn't validate)
     send_raw(writer, state, Proto::Tcp, &hdr, payload, false).await
 }

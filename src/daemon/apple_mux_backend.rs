@@ -83,30 +83,32 @@ async fn handle_connected(
     // Open + init + read serial are blocking USB I/O; run in one task.
     let opened = tokio::task::spawn_blocking({
         let path = path.clone();
-        move || -> io::Result<(Device, String, u8, u8)> {
+        move || -> io::Result<(Device, String, u8, u8, u16)> {
             let device = Device::open(&path)?;
             // Init is required, the handle is unusable if it fails.
             device.init()?;
             let serial = device.serial()?;
             // Map the two bulk pipes to read (IN) / write (OUT) by
             // endpoint direction rather than assuming descriptor order.
-            let (in1, _) = device.pipe_properties(1)?;
-            let (in2, _) = device.pipe_properties(2)?;
-            let (read_pipe, write_pipe) = match (in1, in2) {
-                (true, false) => (1u8, 2u8),
-                (false, true) => (2u8, 1u8),
+            // Keep the OUT pipe's max-packet size: the writer needs it to
+            // append a terminating ZLP on max-packet-multiple transfers.
+            let (in1, mp1) = device.pipe_properties(1)?;
+            let (in2, mp2) = device.pipe_properties(2)?;
+            let (read_pipe, write_pipe, write_max_packet) = match (in1, in2) {
+                (true, false) => (1u8, 2u8, mp2),
+                (false, true) => (2u8, 1u8, mp1),
                 _ => {
                     return Err(io::Error::other(
                         "mux interface: expected exactly one IN and one OUT bulk pipe",
                     ));
                 }
             };
-            Ok((device, serial, read_pipe, write_pipe))
+            Ok((device, serial, read_pipe, write_pipe, write_max_packet))
         }
     })
     .await;
 
-    let (device, raw_udid, read_pipe, write_pipe) = match opened {
+    let (device, raw_udid, read_pipe, write_pipe, write_max_packet) = match opened {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             warn!("Failed to open apple_mux device {path}: {e:?}");
@@ -120,7 +122,8 @@ async fn handle_connected(
 
     debug!("apple_mux device: pid=0x{product_id:04x} serial={raw_udid} path={path}");
 
-    let (reader, writer): (AppleMuxReader, AppleMuxWriter) = device.pipes(read_pipe, write_pipe);
+    let (reader, writer): (AppleMuxReader, AppleMuxWriter) =
+        device.pipes(read_pipe, write_pipe, write_max_packet);
     drop(device); // reader/writer hold their own Arc to the handle.
 
     let existing_udid = resolve_paired_udid(&pairing_file_finder, &raw_udid).await;

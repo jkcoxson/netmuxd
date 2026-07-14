@@ -268,10 +268,15 @@ impl Device {
         }
     }
 
-    pub fn pipes(&self, read_pipe: u8, write_pipe: u8) -> (AppleMuxReader, AppleMuxWriter) {
+    pub fn pipes(
+        &self,
+        read_pipe: u8,
+        write_pipe: u8,
+        write_max_packet: u16,
+    ) -> (AppleMuxReader, AppleMuxWriter) {
         (
             AppleMuxReader::new(self.handle.clone(), read_pipe),
-            AppleMuxWriter::new(self.handle.clone(), write_pipe),
+            AppleMuxWriter::new(self.handle.clone(), write_pipe, write_max_packet),
         )
     }
 }

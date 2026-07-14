@@ -114,6 +114,14 @@ pub(crate) async fn register_with_manager(
     }
 }
 
+fn synthesize_udid(raw: &str) -> String {
+    if raw.len() == 24 && raw.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("{}-{}", &raw[..8], &raw[8..])
+    } else {
+        raw.to_string()
+    }
+}
+
 /// Run the lockdown Pair flow over the USB mux. Blocks while the
 /// device displays the Trust prompt to the user. On success, writes
 /// the pairing record to disk and returns the canonical UDID we used
@@ -131,6 +139,17 @@ pub(crate) async fn pair_via_usb(
     let idevice = Idevice::new(Box::new(stream), "netmuxd-pair");
     let mut lockdown = LockdownClient { idevice };
 
+    match lockdown.idevice.get_type().await {
+        Ok(ty) if ty != "com.apple.mobile.lockdown" => {
+            info!("{raw_udid} is running '{ty}' (restore mode); exposing without pairing");
+            return Ok(synthesize_udid(raw_udid));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!("QueryType failed for {raw_udid}: {e:?}; attempting to pair anyway");
+        }
+    }
+
     // Ask the device for its canonical UDID
     let canonical_udid = match lockdown.get_value(Some("UniqueDeviceID"), None).await {
         Ok(v) => v
@@ -140,11 +159,7 @@ pub(crate) async fn pair_via_usb(
         Err(e) => {
             // Fallback: synthesize the dashed form from the raw 24-char serial.
             warn!("GetValue(UniqueDeviceID) failed: {e:?}; using synthesized UDID");
-            if raw_udid.len() == 24 && raw_udid.chars().all(|c| c.is_ascii_hexdigit()) {
-                format!("{}-{}", &raw_udid[..8], &raw_udid[8..])
-            } else {
-                raw_udid.to_string()
-            }
+            synthesize_udid(raw_udid)
         }
     };
 

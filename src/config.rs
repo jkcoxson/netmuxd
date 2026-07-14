@@ -18,6 +18,8 @@ pub struct NetmuxdConfig {
     pub apple_mux: bool,
     #[cfg(target_os = "windows")]
     pub kill_amds: bool,
+    #[cfg(target_os = "windows")]
+    pub restart_amds_on_exit: bool,
     pub upstream: Option<UsbmuxdAddr>,
     #[cfg(unix)]
     pub socket_path: String,
@@ -40,6 +42,8 @@ impl NetmuxdConfig {
             apple_mux: true,
             #[cfg(target_os = "windows")]
             kill_amds: false,
+            #[cfg(target_os = "windows")]
+            restart_amds_on_exit: false,
             upstream: None,
             #[cfg(unix)]
             socket_path: DEFAULT_SOCKET_PATH.to_string(),
@@ -97,6 +101,11 @@ impl NetmuxdConfig {
                 #[cfg(target_os = "windows")]
                 "--kill-amds" => {
                     res.kill_amds = true;
+                    i += 1;
+                }
+                #[cfg(target_os = "windows")]
+                "--restart-amds-on-exit" => {
+                    res.restart_amds_on_exit = true;
                     i += 1;
                 }
                 "--disable-heartbeat" => {
@@ -179,6 +188,13 @@ impl NetmuxdConfig {
                         println!(
                             "                              device and the :27015 listener before we bind it.)"
                         );
+                        println!(
+                            "  --restart-amds-on-exit     (Windows: on shutdown (Ctrl+C) start the \"Apple Mobile Device"
+                        );
+                        println!(
+                            "                              Service\" back up via the SCM, restoring Apple's stack. Pairs"
+                        );
+                        println!("                              with --kill-amds.)");
                     }
                     println!(
                         "  --upstream-usbmuxd [addr]  (shim mode: forward USB/most requests to this muxer;"

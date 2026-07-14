@@ -31,7 +31,9 @@ it works a lot better than libusb.
 Apple's own daemon (`AppleMobileDeviceService.exe`) holds the usbmux
 listener on TCP 127.0.0.1:27015.
 Pass `--kill-amds` to terminate it at startup so netmuxd owns
-the device and the listener.
+the device and the listener. Add `--restart-amds-on-exit` to start the
+`Apple Mobile Device Service` back up (via the Service Control Manager)
+when netmuxd shuts down with Ctrl+C, restoring Apple's usual stack.
 
 ### libwdi/libusb 
 

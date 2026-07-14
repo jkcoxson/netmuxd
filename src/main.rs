@@ -60,14 +60,38 @@ async fn main() {
     let config = NetmuxdConfig::collect();
     info!("Collected arguments, proceeding");
 
-    // Terminate Apple's daemon before we bind anything
     #[cfg(target_os = "windows")]
-    if config.kill_amds {
+    let killed_amds_paths: Vec<String> = if config.kill_amds {
         match tokio::task::spawn_blocking(netmuxd::apple_mux::amds::kill_amds).await {
-            Ok(0) => info!("--kill-amds: no AppleMobileDeviceService process found"),
-            Ok(n) => info!("--kill-amds: terminated {n} AppleMobileDeviceService process(es)"),
-            Err(e) => warn!("--kill-amds task panicked: {e:?}"),
+            Ok(paths) => {
+                if paths.is_empty() {
+                    info!("--kill-amds: no AppleMobileDeviceService process found");
+                } else {
+                    info!(
+                        "--kill-amds: terminated {} AppleMobileDeviceService process(es)",
+                        paths.len()
+                    );
+                }
+                paths
+            }
+            Err(e) => {
+                warn!("--kill-amds task panicked: {e:?}");
+                Vec::new()
+            }
         }
+    } else {
+        Vec::new()
+    };
+
+    #[cfg(target_os = "windows")]
+    if config.restart_amds_on_exit {
+        let paths = killed_amds_paths.clone();
+        tokio::spawn(async move {
+            wait_for_shutdown_signal().await;
+            println!("Shutting down; restarting AMDS");
+            netmuxd::apple_mux::amds::restart_amds(&paths);
+            std::process::exit(0);
+        });
     }
 
     let manager_sender = new_manager_thread(&config);
@@ -192,6 +216,32 @@ async fn main() {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::windows;
+    let mut ctrl_c = match windows::ctrl_c() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to install Ctrl+C handler: {e:?}");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+    let mut ctrl_close = match windows::ctrl_close() {
+        Ok(s) => s,
+        Err(e) => {
+            // Fall back to Ctrl+C only.
+            warn!("Failed to install console-close handler: {e:?}");
+            ctrl_c.recv().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = ctrl_c.recv() => {}
+        _ = ctrl_close.recv() => {}
     }
 }
 

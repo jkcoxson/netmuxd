@@ -214,6 +214,15 @@ impl PairingFileFinder {
         Ok(p)
     }
 
+    pub async fn remove_pairing_record(&self, udid: &str) -> std::io::Result<()> {
+        let path = PathBuf::from(self.plist_storage.clone()).join(format!("{udid}.plist"));
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub async fn get_buid(&self) -> Result<String, std::io::Error> {
         let (_, buid) = self.get_host_identity().await?;
         Ok(buid)

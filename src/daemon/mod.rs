@@ -10,8 +10,12 @@
 // Both backends end up calling the helpers below to pair (if needed)
 // and register the device with the manager.
 
-use idevice::{Idevice, services::lockdown::LockdownClient};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use idevice::{Idevice, IdeviceError, services::lockdown::LockdownClient};
 use log::{info, warn};
+use tokio::sync::Mutex;
 
 use crate::config::NetmuxdConfig;
 use crate::manager::{ManagerRequest, ManagerRequestType, ManagerSender};
@@ -201,6 +205,139 @@ pub(crate) async fn resolve_paired_udid(finder: &PairingFileFinder, raw: &str) -
         }
     }
     None
+}
+
+enum RecordCheck {
+    Valid,
+    Stale(String),
+    Unknown(String),
+}
+
+async fn check_pairing_record(
+    pairing_finder: &PairingFileFinder,
+    handle: &UsbMuxHandle,
+    udid: &str,
+) -> RecordCheck {
+    let pairing_file = match pairing_finder.get_pairing_record(&udid.to_string()).await {
+        Ok(p) => p,
+        Err(e) => return RecordCheck::Unknown(format!("read pairing record: {e:?}")),
+    };
+
+    let stream = match handle.connect(LockdownClient::LOCKDOWND_PORT).await {
+        Ok(s) => s,
+        Err(e) => return RecordCheck::Unknown(format!("usb connect to lockdown: {e:?}")),
+    };
+
+    let idevice = Idevice::new(Box::new(stream), "netmuxd-preflight");
+    let mut lockdown = LockdownClient { idevice };
+
+    match lockdown.start_session(&pairing_file).await {
+        Ok(_legacy) => RecordCheck::Valid,
+        Err(IdeviceError::InvalidHostID) => {
+            RecordCheck::Stale("device does not recognize this host's pairing".to_string())
+        }
+        Err(IdeviceError::Rustls(e)) => {
+            RecordCheck::Stale(format!("TLS handshake failed with stored certs: {e:?}"))
+        }
+        Err(e) => RecordCheck::Unknown(format!("{e:?}")),
+    }
+}
+
+/// The bits of `ListDevices` info a backend has on hand at connect
+/// time but that `connect_device` only ever threads through unchanged.
+pub(crate) struct DeviceMeta {
+    pub location_id: u64,
+    pub product_id: u64,
+    pub speed: u64,
+}
+
+pub(crate) async fn connect_device<K>(
+    sender: &ManagerSender,
+    pairing_file_finder: &PairingFileFinder,
+    known: &Arc<Mutex<HashMap<K, String>>>,
+    key: K,
+    handle: UsbMuxHandle,
+    raw_udid: String,
+    meta: DeviceMeta,
+) -> String
+where
+    K: Eq + std::hash::Hash + Clone + Send + 'static,
+{
+    let DeviceMeta {
+        location_id,
+        product_id,
+        speed,
+    } = meta;
+
+    let existing_udid = resolve_paired_udid(pairing_file_finder, &raw_udid).await;
+
+    let validated_udid = match existing_udid {
+        Some(udid) => match check_pairing_record(pairing_file_finder, &handle, &udid).await {
+            RecordCheck::Valid => Some(udid),
+            RecordCheck::Stale(reason) => {
+                warn!("Pairing record for {udid} is stale ({reason}); removing and re-pairing");
+                if let Err(e) = pairing_file_finder.remove_pairing_record(&udid).await {
+                    warn!("Failed to remove stale pairing record for {udid}: {e:?}");
+                }
+                None
+            }
+            RecordCheck::Unknown(reason) => {
+                warn!(
+                    "Could not validate pairing record for {udid} ({reason}); trusting it anyway"
+                );
+                Some(udid)
+            }
+        },
+        None => None,
+    };
+
+    match validated_udid {
+        Some(udid) => {
+            register_with_manager(sender, udid.clone(), handle, location_id, product_id, speed)
+                .await;
+            info!(
+                "Registered USB device {udid} (location_id=0x{location_id:x}, pid=0x{product_id:04x})"
+            );
+            udid
+        }
+        None => {
+            info!(
+                "No valid pairing record for {raw_udid}; starting pair flow (tap Trust on the device when prompted)"
+            );
+            let pairing_finder = pairing_file_finder.clone();
+            let handle_for_pair = handle.clone();
+            let sender_for_pair = sender.clone();
+            let known_for_pair = known.clone();
+            let raw_udid_for_pair = raw_udid.clone();
+            tokio::spawn(async move {
+                match pair_via_usb(&pairing_finder, &handle_for_pair, &raw_udid_for_pair).await {
+                    Ok(udid) => {
+                        info!("Successfully paired {udid}");
+                        {
+                            let mut k = known_for_pair.lock().await;
+                            if k.contains_key(&key) {
+                                k.insert(key, udid.clone());
+                            }
+                        }
+                        register_with_manager(
+                            &sender_for_pair,
+                            udid,
+                            handle_for_pair,
+                            location_id,
+                            product_id,
+                            speed,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        warn!("Pairing failed for {raw_udid_for_pair}: {e:?}");
+                        handle_for_pair.shutdown().await;
+                    }
+                }
+            });
+            raw_udid
+        }
+    }
 }
 
 /// Sentinel sent over the device-removal channel for both backends.

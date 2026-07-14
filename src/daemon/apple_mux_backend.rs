@@ -16,7 +16,7 @@ use crate::manager::ManagerSender;
 use crate::pairing_file::PairingFileFinder;
 use crate::usb::mux::{self, UsbMuxHandle};
 
-use super::{pair_via_usb, register_with_manager, resolve_paired_udid, send_remove};
+use super::{DeviceMeta, connect_device, send_remove};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -126,64 +126,23 @@ async fn handle_connected(
         device.pipes(read_pipe, write_pipe, write_max_packet);
     drop(device); // reader/writer hold their own Arc to the handle.
 
-    let existing_udid = resolve_paired_udid(&pairing_file_finder, &raw_udid).await;
-
     let (exit_tx, exit_rx) = oneshot::channel::<u64>();
     let handle: UsbMuxHandle = mux::spawn(0, raw_udid.clone(), reader, writer, exit_tx);
 
-    let registered_udid = match existing_udid {
-        Some(udid) => {
-            register_with_manager(
-                &sender,
-                udid.clone(),
-                handle.clone(),
-                location_id,
-                product_id,
-                speed,
-            )
-            .await;
-            info!("Registered USB device {udid} (location_id=0x{location_id:x})");
-            Some(udid)
-        }
-        None => {
-            info!("No pairing record for {raw_udid}; starting pair flow");
-            let pairing_finder = pairing_file_finder.clone();
-            let handle_for_pair = handle.clone();
-            let sender_for_pair = sender.clone();
-            let known_for_pair = known.clone();
-            let raw_udid_for_pair = raw_udid.clone();
-            let key = path.clone();
-            tokio::spawn(async move {
-                match pair_via_usb(&pairing_finder, &handle_for_pair, &raw_udid_for_pair).await {
-                    Ok(udid) => {
-                        info!("Successfully paired {udid}");
-                        {
-                            let mut k = known_for_pair.lock().await;
-                            if k.contains_key(&key) {
-                                k.insert(key, udid.clone());
-                            }
-                        }
-                        register_with_manager(
-                            &sender_for_pair,
-                            udid,
-                            handle_for_pair,
-                            location_id,
-                            product_id,
-                            speed,
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        warn!("Pairing failed for {raw_udid_for_pair}: {e:?}");
-                        handle_for_pair.shutdown().await;
-                    }
-                }
-            });
-            None
-        }
-    };
-
-    let map_udid = registered_udid.unwrap_or_else(|| raw_udid.clone());
+    let map_udid = connect_device(
+        &sender,
+        &pairing_file_finder,
+        &known,
+        path.clone(),
+        handle,
+        raw_udid.clone(),
+        DeviceMeta {
+            location_id,
+            product_id,
+            speed,
+        },
+    )
+    .await;
     {
         let mut k = known.lock().await;
         k.insert(path.clone(), map_udid);

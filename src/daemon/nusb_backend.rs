@@ -26,8 +26,8 @@ use crate::pairing_file::PairingFileFinder;
 use crate::usb::mux::{self, UsbMuxHandle};
 
 use super::{
-    APPLE_VID, INTERFACE_CLASS, INTERFACE_PROTOCOL, INTERFACE_SUBCLASS, PID_RANGE_HIGH,
-    PID_RANGE_LOW, pair_via_usb, register_with_manager, resolve_paired_udid, send_remove,
+    APPLE_VID, DeviceMeta, INTERFACE_CLASS, INTERFACE_PROTOCOL, INTERFACE_SUBCLASS, PID_RANGE_HIGH,
+    PID_RANGE_LOW, connect_device, send_remove,
 };
 
 const READER_BUF: usize = 16384;
@@ -104,6 +104,32 @@ pub(super) async fn run(sender: ManagerSender, config: NetmuxdConfig) {
     }
 
     warn!("USB hotplug stream ended");
+}
+
+// if MacOS does its silly little "oh you want to connect this device" thing
+// it doesn't let you claim right away
+const CLAIM_INTERFACE_RETRIES: u32 = 5;
+const CLAIM_INTERFACE_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+async fn claim_interface_with_retry(
+    device: &nusb::Device,
+    interface_number: u8,
+    serial: &Option<String>,
+) -> Result<nusb::Interface, nusb::Error> {
+    let mut attempt = 0;
+    loop {
+        match device.detach_and_claim_interface(interface_number).await {
+            Ok(i) => return Ok(i),
+            Err(e) if e.kind() == nusb::ErrorKind::Busy && attempt < CLAIM_INTERFACE_RETRIES => {
+                attempt += 1;
+                debug!(
+                    "claim_interface({interface_number}) busy for {serial:?}, retrying ({attempt}/{CLAIM_INTERFACE_RETRIES}): {e:?}",
+                );
+                tokio::time::sleep(CLAIM_INTERFACE_RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 fn is_apple_mux(info: &nusb::DeviceInfo) -> bool {
@@ -200,19 +226,17 @@ async fn handle_connected(
         }
     }
 
-    let interface = match device
-        .detach_and_claim_interface(target.interface_number)
-        .await
-    {
-        Ok(i) => i,
-        Err(e) => {
-            warn!(
-                "claim_interface({}) failed for {serial:?}: {e:?}",
-                target.interface_number
-            );
-            return;
-        }
-    };
+    let interface =
+        match claim_interface_with_retry(&device, target.interface_number, &serial).await {
+            Ok(i) => i,
+            Err(e) => {
+                warn!(
+                    "claim_interface({}) failed for {serial:?}: {e:?}",
+                    target.interface_number
+                );
+                return;
+            }
+        };
 
     let ep_in = match interface.endpoint::<Bulk, In>(target.ep_in) {
         Ok(e) => e,
@@ -246,76 +270,25 @@ async fn handle_connected(
         }
     };
 
-    let existing_udid = resolve_paired_udid(&pairing_file_finder, &raw_udid).await;
-
     // We always need the mux task running before we can either pair
     // (which talks to lockdown over the mux) or register the device
     let (exit_tx, exit_rx) = oneshot::channel::<u64>();
     let handle: UsbMuxHandle = mux::spawn(0, raw_udid.clone(), reader, writer, exit_tx);
 
-    let registered_udid = match existing_udid {
-        Some(udid) => {
-            // We already trust this device — register immediately.
-            register_with_manager(
-                &sender,
-                udid.clone(),
-                handle.clone(),
-                location_id,
-                product_id,
-                speed,
-            )
-            .await;
-            info!(
-                "Registered USB device {udid} (location_id=0x{:x}, pid=0x{:04x})",
-                location_id,
-                info.product_id()
-            );
-            Some(udid)
-        }
-        None => {
-            // No pairing record yet, make one
-            info!(
-                "No pairing record for {raw_udid}; starting pair flow (tap Trust on the device when prompted)"
-            );
-            let pairing_finder = pairing_file_finder.clone();
-            let handle_for_pair = handle.clone();
-            let sender_for_pair = sender.clone();
-            let known_for_pair = known.clone();
-            let raw_udid_for_pair = raw_udid.clone();
-            tokio::spawn(async move {
-                match pair_via_usb(&pairing_finder, &handle_for_pair, &raw_udid_for_pair).await {
-                    Ok(udid) => {
-                        info!("Successfully paired {udid}");
-                        // Replace the placeholder raw_udid in `known`
-                        // with the canonical form so disconnect
-                        // cleanup matches what we register below.
-                        {
-                            let mut k = known_for_pair.lock().await;
-                            if k.contains_key(&id) {
-                                k.insert(id, udid.clone());
-                            }
-                        }
-                        register_with_manager(
-                            &sender_for_pair,
-                            udid,
-                            handle_for_pair,
-                            location_id,
-                            product_id,
-                            speed,
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        warn!("Pairing failed for {raw_udid_for_pair}: {e:?}");
-                        handle_for_pair.shutdown().await;
-                    }
-                }
-            });
-            None
-        }
-    };
-
-    let map_udid = registered_udid.unwrap_or_else(|| raw_udid.clone());
+    let map_udid = connect_device(
+        &sender,
+        &pairing_file_finder,
+        &known,
+        id,
+        handle,
+        raw_udid.clone(),
+        DeviceMeta {
+            location_id,
+            product_id,
+            speed,
+        },
+    )
+    .await;
     {
         let mut k = known.lock().await;
         k.insert(id, map_udid);

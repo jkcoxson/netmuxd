@@ -231,6 +231,18 @@ async fn check_pairing_record(
     let idevice = Idevice::new(Box::new(stream), "netmuxd-preflight");
     let mut lockdown = LockdownClient { idevice };
 
+    match lockdown.idevice.get_type().await {
+        Ok(ty) if ty != "com.apple.mobile.lockdown" => {
+            return RecordCheck::Unknown(format!(
+                "device is running '{ty}' (restore mode); skipping validation"
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return RecordCheck::Unknown(format!("QueryType failed: {e:?}"));
+        }
+    }
+
     match lockdown.start_session(&pairing_file).await {
         Ok(_legacy) => RecordCheck::Valid,
         Err(IdeviceError::InvalidHostID) => {

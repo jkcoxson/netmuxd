@@ -311,8 +311,8 @@ where
                         break;
                     }
                 };
-                if state.version >= 2 && pkt.len() >= 14 {
-                    state.rx_seq = u16::from_be_bytes(pkt[12..14].try_into().unwrap());
+                if state.version >= 2 && pkt.len() >= V2_HEADER_SIZE {
+                    state.rx_seq = u16::from_be_bytes(pkt[14..16].try_into().unwrap());
                 }
                 if let Err(e) = handle_incoming(
                     device_id,
@@ -467,16 +467,33 @@ where
                     info!("dev={device_id} sport={our_sport} -> dport={our_dport} connected");
                 } else {
                     if let Some(reply) = conn.connect_reply.take() {
+                        let reason = String::from_utf8_lossy(payload);
                         let _ = reply.send(Err(io::Error::new(
                             io::ErrorKind::ConnectionRefused,
-                            format!("device refused (flags=0x{:x})", th.flags),
+                            format!(
+                                "device refused (flags=0x{:x}, reason: {})",
+                                th.flags,
+                                reason.trim_end()
+                            ),
                         )));
                     }
                     teardown(connections, our_sport);
                 }
             } else if conn.state == ConnState::Connected {
                 if th.flags & tcp_flags::RST != 0 {
-                    info!("dev={device_id} sport={our_sport} dport={our_dport} reset by device");
+                    let reason = String::from_utf8_lossy(payload);
+                    warn!(
+                        "dev={device_id} sport={our_sport} dport={our_dport} reset by device \
+                         (reason: {})",
+                        reason.trim_end()
+                    );
+                    teardown(connections, our_sport);
+                } else if th.flags != tcp_flags::ACK {
+                    warn!(
+                        "dev={device_id} sport={our_sport} dport={our_dport} unexpected flags \
+                         0x{:x}, closing",
+                        th.flags
+                    );
                     teardown(connections, our_sport);
                 } else {
                     if !payload.is_empty() {
@@ -520,7 +537,11 @@ where
                         "dev={device_id} CONTROL INFO: {}",
                         String::from_utf8_lossy(rest)
                     ),
-                    _ => debug!("dev={device_id} CONTROL kind={kind} ({} bytes)", rest.len()),
+                    _ => warn!(
+                        "dev={device_id} CONTROL kind={kind} ({} bytes): {}",
+                        rest.len(),
+                        String::from_utf8_lossy(rest)
+                    ),
                 }
             }
         }

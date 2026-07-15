@@ -8,7 +8,9 @@
 #![cfg(not(target_os = "windows"))]
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -16,7 +18,9 @@ use log::{debug, info, trace, warn};
 use nusb::DeviceId;
 use nusb::descriptors::TransferType;
 use nusb::hotplug::HotplugEvent;
+use nusb::io::EndpointWrite;
 use nusb::transfer::{Bulk, ControlIn, ControlType, Direction, In, Out, Recipient};
+use tokio::io::AsyncWrite;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 
@@ -32,6 +36,45 @@ use super::{
 
 const READER_BUF: usize = 16384;
 const WRITER_BUF: usize = 16384;
+
+struct ZlpWriter {
+    inner: EndpointWrite<Bulk>,
+    ended: bool,
+}
+
+impl ZlpWriter {
+    fn new(inner: EndpointWrite<Bulk>) -> Self {
+        Self { inner, ended: true }
+    }
+}
+
+impl AsyncWrite for ZlpWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = &mut *self;
+        let res = Pin::new(&mut this.inner).poll_write(cx, buf);
+        if matches!(res, Poll::Ready(Ok(n)) if n > 0) {
+            this.ended = false;
+        }
+        res
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        if !this.ended {
+            this.inner.submit_end();
+            this.ended = true;
+        }
+        Pin::new(&mut this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.poll_flush(cx)
+    }
+}
 
 // Apple vendor-specific USB request: switch the device into a mode
 // that exposes a particular set of configurations. See
@@ -260,7 +303,7 @@ async fn handle_connected(
     };
 
     let reader = ep_in.reader(READER_BUF).with_num_transfers(4);
-    let writer = ep_out.writer(WRITER_BUF).with_num_transfers(4);
+    let writer = ZlpWriter::new(ep_out.writer(WRITER_BUF).with_num_transfers(4));
 
     let raw_udid = match serial.clone() {
         Some(s) => s,
@@ -315,38 +358,46 @@ struct MuxTarget {
 }
 
 fn find_mux_target(device: &nusb::Device) -> Option<MuxTarget> {
-    // Try configurations highest-numbered first, mirroring usbmuxd.
+    // Prefer the active configuration if it already exposes the mux
+    if let Ok(active) = device.active_configuration()
+        && let Some(target) = find_mux_in_config(&active)
+    {
+        return Some(target);
+    }
+
+    // Otherwise try configurations highest-numbered first
     let mut configs: Vec<_> = device.configurations().collect();
     configs.sort_by_key(|c| std::cmp::Reverse(c.configuration_value()));
+    configs.into_iter().find_map(|c| find_mux_in_config(&c))
+}
 
-    for cfg in configs {
-        for intf in cfg.interfaces() {
-            for alt in intf.alt_settings() {
-                if alt.class() != INTERFACE_CLASS
-                    || alt.subclass() != INTERFACE_SUBCLASS
-                    || alt.protocol() != INTERFACE_PROTOCOL
-                {
+fn find_mux_in_config(cfg: &nusb::descriptors::ConfigurationDescriptor) -> Option<MuxTarget> {
+    for intf in cfg.interfaces() {
+        for alt in intf.alt_settings() {
+            if alt.class() != INTERFACE_CLASS
+                || alt.subclass() != INTERFACE_SUBCLASS
+                || alt.protocol() != INTERFACE_PROTOCOL
+            {
+                continue;
+            }
+            let mut ep_in = None;
+            let mut ep_out = None;
+            for ep in alt.endpoints() {
+                if ep.transfer_type() != TransferType::Bulk {
                     continue;
                 }
-                let mut ep_in = None;
-                let mut ep_out = None;
-                for ep in alt.endpoints() {
-                    if ep.transfer_type() != TransferType::Bulk {
-                        continue;
-                    }
-                    match ep.direction() {
-                        Direction::In => ep_in = Some(ep.address()),
-                        Direction::Out => ep_out = Some(ep.address()),
-                    }
+                match ep.direction() {
+                    Direction::In => ep_in = Some(ep.address()),
+                    Direction::Out => ep_out = Some(ep.address()),
                 }
-                if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
-                    return Some(MuxTarget {
-                        config_value: cfg.configuration_value(),
-                        interface_number: alt.interface_number(),
-                        ep_in,
-                        ep_out,
-                    });
-                }
+            }
+            if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
+                return Some(MuxTarget {
+                    config_value: cfg.configuration_value(),
+                    interface_number: alt.interface_number(),
+                    ep_in,
+                    ep_out,
+                });
             }
         }
     }

@@ -9,10 +9,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{debug, info, trace, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 // v1 frames have only the 8-byte protocol/length header; v2 adds the
 // magic and tx/rx seq, bringing the header to 16 bytes. The very first
@@ -27,6 +29,10 @@ const USB_MTU: usize = 3 * 16384;
 const MAX_PAYLOAD: usize = USB_MTU - V2_HEADER_SIZE - TCP_HEADER_SIZE;
 const RX_WINDOW: u32 = 131072;
 const DUPLEX_BUF: usize = 65536;
+
+// throttle the stream a bit
+const TX_HIGH_WATER: usize = 1024 * 1024;
+const TX_LOW_WATER: usize = 256 * 1024;
 
 fn mux_header_size(version: u8) -> usize {
     if version < 2 {
@@ -109,6 +115,9 @@ struct Connection {
     /// chunks bounded by `MAX_PAYLOAD` and the device's advertised
     /// window each time `rx_ack`/`rx_win` move.
     pending_tx: VecDeque<u8>,
+    client_closed: bool,
+    tx_pause: Arc<AtomicBool>,
+    tx_resume: Arc<Notify>,
 }
 
 #[derive(PartialEq)]
@@ -163,12 +172,30 @@ async fn run<R, W>(
 ) -> io::Result<()>
 where
     R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin,
+    W: AsyncWrite + Send + Unpin + 'static,
 {
     // The handshake runs in v1 framing (8-byte header, no magic);
     // we transition to v2 once the device acknowledges VERSION.
     let mut state = MuxState::default();
-    send_version(&mut writer, &mut state, 2, 0).await?;
+
+    // write outside of the tokio::select
+    let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    crate::spawn(async move {
+        while let Some(buf) = write_rx.recv().await {
+            if let Err(e) = writer.write_all(&buf).await {
+                warn!("dev={device_id} writer task write failed: {e:?}");
+                break;
+            }
+            // Flush per frame so the ZLP / transfer-end framing lands on mux
+            // packet boundaries (the device parses one packet per transfer).
+            if let Err(e) = writer.flush().await {
+                warn!("dev={device_id} writer task flush failed: {e:?}");
+                break;
+            }
+        }
+    });
+
+    send_version(&write_tx, &mut state, 2, 0).await?;
 
     // Wait for the device's version response (still v1).
     let pkt = read_frame(&mut reader).await?;
@@ -194,7 +221,7 @@ where
     state.version = 2;
 
     // SETUP packet kicks the device into mux mode (v2 framing, resets seq).
-    send_raw(&mut writer, &mut state, Proto::Setup, &[], &[0x07], true).await?;
+    send_raw(&write_tx, &mut state, Proto::Setup, &[], &[0x07], true).await?;
 
     let (pkt_tx, mut pkt_rx) = mpsc::channel::<io::Result<Vec<u8>>>(16);
     let (_shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
@@ -247,8 +274,11 @@ where
                             rx_tx: None,
                             rx_buffered: 0,
                             pending_tx: VecDeque::new(),
+                            client_closed: false,
+                            tx_pause: Arc::new(AtomicBool::new(false)),
+                            tx_resume: Arc::new(Notify::new()),
                         };
-                        if let Err(e) = send_tcp(&mut writer, &mut state, &conn, tcp_flags::SYN, &[]).await {
+                        if let Err(e) = send_tcp(&write_tx, &mut state, &conn, tcp_flags::SYN, &[]).await {
                             let _ = conn.connect_reply.take().unwrap().send(Err(e));
                             continue;
                         }
@@ -270,17 +300,26 @@ where
                     Some(bytes) => {
                         conn.pending_tx.extend(bytes);
                         if let Err(e) =
-                            flush_pending(&mut writer, &mut state, conn).await
+                            flush_pending(&write_tx, &mut state, conn).await
                         {
                             warn!("dev={device_id} send_tcp failed for sport={sport}: {e:?}");
                             teardown(&mut connections, sport);
                             continue;
                         }
+                        if conn.pending_tx.len() > TX_HIGH_WATER {
+                            conn.tx_pause.store(true, Ordering::Release);
+                        }
                     }
                     None => {
-                        // User closed: send RST and clean up.
-                        let _ = send_tcp(&mut writer, &mut state, conn, tcp_flags::RST, &[]).await;
-                        teardown(&mut connections, sport);
+                        conn.client_closed = true;
+                        if let Err(e) = flush_pending(&write_tx, &mut state, conn).await {
+                            warn!("dev={device_id} flush on close failed sport={sport}: {e:?}");
+                            let _ = send_tcp(&write_tx, &mut state, conn, tcp_flags::RST, &[]).await;
+                            teardown(&mut connections, sport);
+                        } else if tx_drained(conn) {
+                            let _ = send_tcp(&write_tx, &mut state, conn, tcp_flags::RST, &[]).await;
+                            teardown(&mut connections, sport);
+                        }
                     }
                 }
             }
@@ -293,7 +332,7 @@ where
                     if conn.state == ConnState::Connected
                         && before < MAX_PAYLOAD as u32
                         && after >= MAX_PAYLOAD as u32
-                        && let Err(e) = send_tcp(&mut writer, &mut state, conn, tcp_flags::ACK, &[]).await
+                        && let Err(e) = send_tcp(&write_tx, &mut state, conn, tcp_flags::ACK, &[]).await
                     {
                         warn!("dev={device_id} window-update ACK failed sport={sport}: {e:?}");
                     }
@@ -318,7 +357,7 @@ where
                     device_id,
                     &pkt,
                     &mut connections,
-                    &mut writer,
+                    &write_tx,
                     &mut state,
                     &tx_data,
                     &drain_tx,
@@ -333,11 +372,15 @@ where
     let sports: Vec<u16> = connections.keys().copied().collect();
     for sport in sports {
         if let Some(conn) = connections.get(&sport) {
-            let _ = send_tcp(&mut writer, &mut state, conn, tcp_flags::RST, &[]).await;
+            let _ = send_tcp(&write_tx, &mut state, conn, tcp_flags::RST, &[]).await;
         }
         teardown(&mut connections, sport);
     }
     Ok(())
+}
+
+fn tx_drained(conn: &Connection) -> bool {
+    conn.pending_tx.is_empty()
 }
 
 fn teardown(connections: &mut HashMap<u16, Connection>, sport: u16) {
@@ -353,18 +396,15 @@ fn teardown(connections: &mut HashMap<u16, Connection>, sport: u16) {
     }
 }
 
-async fn handle_incoming<W>(
+async fn handle_incoming(
     device_id: u64,
     pkt: &[u8],
     connections: &mut HashMap<u16, Connection>,
-    writer: &mut W,
+    write_tx: &mpsc::UnboundedSender<Vec<u8>>,
     state: &mut MuxState,
     tx_data: &mpsc::Sender<(u16, Option<Vec<u8>>)>,
     drain_tx: &mpsc::UnboundedSender<(u16, u32)>,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Send + Unpin,
-{
+) -> io::Result<()> {
     let hdr = parse_header(pkt, state.version)?;
     let header_size = mux_header_size(state.version);
 
@@ -400,8 +440,11 @@ where
                         rx_tx: None,
                         rx_buffered: 0,
                         pending_tx: VecDeque::new(),
+                        client_closed: false,
+                        tx_pause: Arc::new(AtomicBool::new(false)),
+                        tx_resume: Arc::new(Notify::new()),
                     };
-                    let _ = send_tcp(writer, state, &anon, tcp_flags::RST, &[]).await;
+                    let _ = send_tcp(write_tx, state, &anon, tcp_flags::RST, &[]).await;
                 }
                 return Ok(());
             };
@@ -414,7 +457,7 @@ where
                 if th.flags == (tcp_flags::SYN | tcp_flags::ACK) {
                     conn.tx_seq = conn.tx_seq.wrapping_add(1);
                     conn.tx_ack = conn.tx_ack.wrapping_add(1);
-                    send_tcp(writer, state, conn, tcp_flags::ACK, &[]).await?;
+                    send_tcp(write_tx, state, conn, tcp_flags::ACK, &[]).await?;
                     conn.state = ConnState::Connected;
 
                     let (user_side, our_side) = tokio::io::duplex(DUPLEX_BUF);
@@ -423,11 +466,16 @@ where
                     conn.rx_tx = Some(rx_tx);
                     let sport = conn.sport;
 
-                    // Pump: user -> device.
+                    // don't overwhelm the device, throttle
                     let tx_data = tx_data.clone();
+                    let tx_pause = conn.tx_pause.clone();
+                    let tx_resume = conn.tx_resume.clone();
                     crate::spawn(async move {
                         let mut buf = vec![0u8; MAX_PAYLOAD];
                         loop {
+                            while tx_pause.load(Ordering::Acquire) {
+                                tx_resume.notified().await;
+                            }
                             match our_read.read(&mut buf).await {
                                 Ok(0) | Err(_) => {
                                     let _ = tx_data.send((sport, None)).await;
@@ -504,7 +552,7 @@ where
                             .is_some_and(|tx| tx.send(payload.to_vec()).is_ok());
                         if !delivered {
                             warn!("dev={device_id} sport={our_sport} user-side gone; resetting");
-                            let _ = send_tcp(writer, state, conn, tcp_flags::RST, &[]).await;
+                            let _ = send_tcp(write_tx, state, conn, tcp_flags::RST, &[]).await;
                             teardown(connections, our_sport);
                             return Ok(());
                         }
@@ -512,12 +560,18 @@ where
                         conn.rx_buffered = conn.rx_buffered.saturating_add(len);
                         conn.tx_ack = conn.tx_ack.wrapping_add(len);
                         // The ACK carries the now-shrunk window (see send_tcp).
-                        send_tcp(writer, state, conn, tcp_flags::ACK, &[]).await?;
+                        send_tcp(write_tx, state, conn, tcp_flags::ACK, &[]).await?;
                     }
                     // The packet (payload-bearing or pure ACK) updated
                     // rx_ack / rx_win — try to flush any user bytes that
                     // were waiting on window space.
-                    flush_pending(writer, state, conn).await?;
+                    flush_pending(write_tx, state, conn).await?;
+
+                    // finish writing before closing
+                    if conn.client_closed && tx_drained(conn) {
+                        send_tcp(write_tx, state, conn, tcp_flags::RST, &[]).await?;
+                        teardown(connections, our_sport);
+                    }
                 }
             }
         }
@@ -638,31 +692,25 @@ where
     Ok(pkt)
 }
 
-async fn send_version<W>(
-    writer: &mut W,
+async fn send_version(
+    write_tx: &mpsc::UnboundedSender<Vec<u8>>,
     state: &mut MuxState,
     major: u32,
     minor: u32,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Send + Unpin,
-{
+) -> io::Result<()> {
     // The initial VERSION exchange happens with state.version == 0, so
     // send_raw will write an 8-byte v1 header.
     let mut payload = [0u8; 12];
     payload[0..4].copy_from_slice(&major.to_be_bytes());
     payload[4..8].copy_from_slice(&minor.to_be_bytes());
-    send_raw(writer, state, Proto::Version, &payload, &[], false).await
+    send_raw(write_tx, state, Proto::Version, &payload, &[], false).await
 }
 
-async fn flush_pending<W>(
-    writer: &mut W,
+async fn flush_pending(
+    write_tx: &mpsc::UnboundedSender<Vec<u8>>,
     state: &mut MuxState,
     conn: &mut Connection,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Send + Unpin,
-{
+) -> io::Result<()> {
     while !conn.pending_tx.is_empty() {
         let inflight = conn.tx_seq.wrapping_sub(conn.rx_ack);
         if inflight >= conn.rx_win {
@@ -674,22 +722,25 @@ where
             break;
         }
         let chunk: Vec<u8> = conn.pending_tx.drain(..chunk_len).collect();
-        send_tcp(writer, state, conn, tcp_flags::ACK, &chunk).await?;
+        send_tcp(write_tx, state, conn, tcp_flags::ACK, &chunk).await?;
         conn.tx_seq = conn.tx_seq.wrapping_add(chunk_len as u32);
+    }
+    // Resume the reader pump once we've drained below the low watermark, so the
+    // client can push more (it was paused when `pending_tx` filled up).
+    if conn.tx_pause.load(Ordering::Acquire) && conn.pending_tx.len() < TX_LOW_WATER {
+        conn.tx_pause.store(false, Ordering::Release);
+        conn.tx_resume.notify_one();
     }
     Ok(())
 }
 
-async fn send_tcp<W>(
-    writer: &mut W,
+async fn send_tcp(
+    write_tx: &mpsc::UnboundedSender<Vec<u8>>,
     state: &mut MuxState,
     conn: &Connection,
     flags: u8,
     payload: &[u8],
-) -> io::Result<()>
-where
-    W: AsyncWrite + Send + Unpin,
-{
+) -> io::Result<()> {
     let mut hdr = [0u8; TCP_HEADER_SIZE];
     hdr[0..2].copy_from_slice(&conn.sport.to_be_bytes());
     hdr[2..4].copy_from_slice(&conn.dport.to_be_bytes());
@@ -703,20 +754,17 @@ where
     let win = RX_WINDOW.saturating_sub(conn.rx_buffered);
     hdr[14..16].copy_from_slice(&((win >> 8) as u16).to_be_bytes());
     // checksum + urgent ptr left zero (the device doesn't validate)
-    send_raw(writer, state, Proto::Tcp, &hdr, payload, false).await
+    send_raw(write_tx, state, Proto::Tcp, &hdr, payload, false).await
 }
 
-async fn send_raw<W>(
-    writer: &mut W,
+async fn send_raw(
+    write_tx: &mpsc::UnboundedSender<Vec<u8>>,
     state: &mut MuxState,
     proto: Proto,
     header: &[u8],
     payload: &[u8],
     reset_seq: bool,
-) -> io::Result<()>
-where
-    W: AsyncWrite + Send + Unpin,
-{
+) -> io::Result<()> {
     let header_size = mux_header_size(state.version);
     let total = header_size + header.len() + payload.len();
     if total > USB_MTU {
@@ -737,7 +785,8 @@ where
     }
     buf.extend_from_slice(header);
     buf.extend_from_slice(payload);
-    writer.write_all(&buf).await?;
-    writer.flush().await?;
+    write_tx
+        .send(buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "writer task gone"))?;
     Ok(())
 }

@@ -20,7 +20,7 @@ idevice = { version = "0.1.60", default-features = false, features = [
   "xpc",
   "tunnel_tcp_stack",
 ] }
-nusb = { git = "https://github.com/jkcoxson/nusb", branch = "webusb", default-features = false }
+nusb = { git = "https://github.com/kevinmehall/nusb", default-features = false }
 plist = "1.8"
 uuid = { version = "1", features = ["v4", "js"] }
 

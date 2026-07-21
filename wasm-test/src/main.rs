@@ -342,21 +342,18 @@ async fn rp_pair() -> Result<(), String> {
 
     log_line("Starting RPPairing - confirm trust + enter the PIN shown on the device.");
     let mut rpf = RpPairingFile::generate(RP_HOSTNAME);
-    let mut rpc = RemotePairingClient::new(conn, RP_HOSTNAME, &mut rpf);
+    let mut rpc = RemotePairingClient::new(conn, RP_HOSTNAME);
 
-    rpc.connect(
-        async |_state: ()| {
-            let win = match web_sys::window() {
-                Some(w) => w,
-                None => return String::new(),
-            };
-            match win.prompt_with_message("Enter the 6-digit PIN shown on the device") {
-                Ok(Some(s)) => s.trim().to_string(),
-                _ => String::new(),
-            }
-        },
-        (),
-    )
+    rpc.connect(&mut rpf, || async {
+        let win = match web_sys::window() {
+            Some(w) => w,
+            None => return String::new(),
+        };
+        match win.prompt_with_message("Enter the 6-digit PIN shown on the device") {
+            Ok(Some(s)) => s.trim().to_string(),
+            _ => String::new(),
+        }
+    })
     .await
     .map_err(|e| format!("RemotePairingClient::connect: {e:?}"))?;
 

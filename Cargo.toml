@@ -39,10 +39,7 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 futures-util = { version = "0.3.21" }
 
-# nusb on the webusb branch — local path until that branch lands a release.
-# `tokio` feature is native-only (it pulls tokio's blocking IO threadpool
-# which doesn't compile on wasm32); see target deps below.
-nusb = { git = "https://github.com/jkcoxson/nusb", branch = "webusb", default-features = false }
+nusb = { git = "https://github.com/kevinmehall/nusb", default-features = false }
 
 plist = "1.8"
 plist-macro = "0.1.6"
@@ -55,7 +52,7 @@ thiserror = "2"
 # daemon, or mdns code so these aren't needed there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
-nusb = { git = "https://github.com/jkcoxson/nusb", branch = "webusb", default-features = false, features = [
+nusb = { git = "https://github.com/kevinmehall/nusb", default-features = false, features = [
   "tokio",
 ] }
 crossfire = { version = "2.1", features = ["tokio"] }

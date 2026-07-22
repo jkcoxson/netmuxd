@@ -385,8 +385,5 @@ pub async fn open_mux_with_progress(
     }
 
     warn!("open_mux: giving up after {attempts} attempt(s)");
-    if let Err(e) = device.close().await {
-        debug!("open_mux: close after giving up returned: {e:?}");
-    }
     Err(last_err.unwrap_or(OpenMuxError::NoMuxInterface))
 }

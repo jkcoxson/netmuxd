@@ -7,6 +7,7 @@
 //! configuration only if needed, claim the interface, and
 //! wrap its bulk endpoints as [`BulkReader`]/[`BulkWriter`].
 
+use log::{debug, info, warn};
 use nusb::descriptors::TransferType;
 use nusb::transfer::{Bulk, Direction, In, Out};
 use nusb::{Device, DeviceInfo, Interface};
@@ -207,7 +208,9 @@ pub async fn open_mux(info: &DeviceInfo) -> Result<OpenedMux, OpenMuxError> {
 /// Default number of claim attempts before giving up. Each attempt past the
 /// first bounces through a non-mux configuration to evict any kernel
 /// bindings to the mux interface before retrying.
-pub const DEFAULT_CLAIM_ATTEMPTS: usize = 6;
+pub const DEFAULT_CLAIM_ATTEMPTS: usize = 100;
+pub const CLAIM_BURST_SIZE: usize = 10;
+pub const CLAIM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Like [`open_mux`] but lets the caller pick the attempt budget.
 ///
@@ -264,11 +267,25 @@ pub async fn open_mux_with_retries(
     let reset_threshold = attempts.div_ceil(2);
     let mut last_err: Option<OpenMuxError> = None;
     for attempt in 0..attempts {
-        let use_reset = attempt >= reset_threshold;
+        if attempt > 0 && attempt.is_multiple_of(CLAIM_BURST_SIZE) {
+            debug!(
+                "open_mux: burst of {CLAIM_BURST_SIZE} exhausted, sleeping {}ms",
+                CLAIM_RETRY_DELAY.as_millis()
+            );
+            crate::sleep(CLAIM_RETRY_DELAY).await;
+        }
 
-        if use_reset
-            && let Err(e) = device.reset().await
-        {
+        let use_reset = attempt >= reset_threshold;
+        debug!(
+            "open_mux: attempt {}/{attempts} (reset={use_reset})",
+            attempt + 1
+        );
+
+        if use_reset && let Err(e) = device.reset().await {
+            warn!(
+                "open_mux: attempt {}/{attempts} reset failed: {e:?}",
+                attempt + 1
+            );
             last_err = Some(OpenMuxError::Reset {
                 error: format!("{e:?} (attempt {}/{attempts})", attempt + 1),
             });
@@ -293,6 +310,11 @@ pub async fn open_mux_with_retries(
                 let _ = device.set_configuration(no_mux).await;
             }
             if let Err(e) = device.set_configuration(target.config_value).await {
+                warn!(
+                    "open_mux: attempt {}/{attempts} set_configuration({}) failed: {e:?}",
+                    attempt + 1,
+                    target.config_value
+                );
                 last_err = Some(OpenMuxError::SetConfiguration {
                     config: target.config_value,
                     error: format!("{e:?} (attempt {}/{attempts})", attempt + 1),
@@ -307,6 +329,11 @@ pub async fn open_mux_with_retries(
         {
             Ok(i) => i,
             Err(e) => {
+                warn!(
+                    "open_mux: attempt {}/{attempts} claim interface {} failed: {e:?}",
+                    attempt + 1,
+                    target.interface_number
+                );
                 last_err = Some(OpenMuxError::ClaimInterface {
                     interface: target.interface_number,
                     error: format!("{e:?} (attempt {}/{attempts})", attempt + 1),
@@ -328,6 +355,12 @@ pub async fn open_mux_with_retries(
                 error: format!("{e:?}"),
             })?;
 
+        info!(
+            "open_mux: claimed interface {} on attempt {}/{attempts} \
+             (reset={use_reset}, switched_config={needs_switch})",
+            target.interface_number,
+            attempt + 1
+        );
         return Ok(OpenedMux {
             device,
             interface,
@@ -336,5 +369,9 @@ pub async fn open_mux_with_retries(
         });
     }
 
+    warn!("open_mux: giving up after {attempts} attempt(s)");
+    if let Err(e) = device.close().await {
+        debug!("open_mux: close after giving up returned: {e:?}");
+    }
     Err(last_err.unwrap_or(OpenMuxError::NoMuxInterface))
 }

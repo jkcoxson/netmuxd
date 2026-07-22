@@ -67,3 +67,17 @@ where
         wasm_bindgen_futures::spawn_local(fut);
     }
 }
+
+/// Cross-platform async sleep. Uses tokio's timer on native and a
+/// `setTimeout`-backed future (`gloo-timers`) on wasm, where tokio's `time`
+/// feature isn't available.
+pub(crate) async fn sleep(dur: std::time::Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tokio::time::sleep(dur).await;
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        gloo_timers::future::TimeoutFuture::new(dur.as_millis() as u32).await;
+    }
+}

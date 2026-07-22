@@ -39,7 +39,7 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 futures-util = { version = "0.3.21" }
 
-nusb = { git = "https://github.com/kevinmehall/nusb", default-features = false }
+nusb = { git = "https://github.com/jkcoxson/nusb", default-features = false, branch = "fix/webusb-drop" }
 
 plist = "1.8"
 plist-macro = "0.1.6"
@@ -52,9 +52,9 @@ thiserror = "2"
 # daemon, or mdns code so these aren't needed there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
-nusb = { git = "https://github.com/kevinmehall/nusb", default-features = false, features = [
+nusb = { git = "https://github.com/jkcoxson/nusb", default-features = false, features = [
   "tokio",
-] }
+], branch = "fix/webusb-drop" }
 crossfire = { version = "2.1", features = ["tokio"] }
 mdns-sd = "0.19"
 # Local path until the idevice release carrying `usbmuxd::server` and the
@@ -74,6 +74,8 @@ uuid = { version = "1.11", features = ["v4"] }
 # the wasm-friendly idevice TLS backend.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { version = "0.4", optional = true }
+# Timer future for `crate::sleep` on wasm (tokio's `time` isn't available here).
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
 idevice = { version = "0.1.64", default-features = false, features = [
   "heartbeat",
   "pair",
@@ -99,4 +101,12 @@ libusbk = []
 # Consumers must bring their own transport: enumerate via nusb directly
 # and feed the bulk endpoints to `usb_mux::spawn`. The daemon, mdns,
 # pairing-file finder, and manager are not available on this target.
-wasm = ["dep:wasm-bindgen-futures", "dep:getrandom_02", "dep:getrandom_04"]
+wasm = [
+  "dep:wasm-bindgen-futures",
+  "dep:gloo-timers",
+  "dep:getrandom_02",
+  "dep:getrandom_04",
+]
+
+# [patch."https://github.com/jkcoxson/nusb"]
+# nusb = { path = "/Users/jacksoncoxson/code/nusb" }

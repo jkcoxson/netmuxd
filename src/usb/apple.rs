@@ -214,6 +214,18 @@ pub const CLAIM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_sec
 
 /// Like [`open_mux`] but lets the caller pick the attempt budget.
 ///
+/// See [`open_mux_with_progress`] for the claim strategy.
+pub async fn open_mux_with_retries(
+    info: &DeviceInfo,
+    max_attempts: usize,
+) -> Result<OpenedMux, OpenMuxError> {
+    open_mux_with_progress(info, max_attempts, |_, _| {}).await
+}
+
+/// Like [`open_mux_with_retries`] but reports progress: `on_attempt(n, total)`
+/// is invoked at the start of each claim attempt (1-based), so callers can
+/// surface "still trying" state to a user while the eviction loop runs.
+///
 /// Strategy: split the attempts in half so we cover both platforms.
 ///
 /// - First half (no-reset / macOS-friendly path):
@@ -241,9 +253,10 @@ pub const CLAIM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_sec
 ///     succeeding.
 ///   - Otherwise bounce through a non-mux config to break any stale
 ///     kernel binding that survived, then re-assert the mux config.
-pub async fn open_mux_with_retries(
+pub async fn open_mux_with_progress(
     info: &DeviceInfo,
     max_attempts: usize,
+    mut on_attempt: impl FnMut(usize, usize),
 ) -> Result<OpenedMux, OpenMuxError> {
     if !is_apple_mux(info) {
         return Err(OpenMuxError::NotAppleMux {
@@ -267,6 +280,8 @@ pub async fn open_mux_with_retries(
     let reset_threshold = attempts.div_ceil(2);
     let mut last_err: Option<OpenMuxError> = None;
     for attempt in 0..attempts {
+        on_attempt(attempt + 1, attempts);
+
         if attempt > 0 && attempt.is_multiple_of(CLAIM_BURST_SIZE) {
             debug!(
                 "open_mux: burst of {CLAIM_BURST_SIZE} exhausted, sleeping {}ms",

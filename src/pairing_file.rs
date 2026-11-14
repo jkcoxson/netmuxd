@@ -118,6 +118,9 @@ impl PairingFileFinder {
                 }
             };
             let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some("SystemConfiguration.plist") {
+                continue;
+            }
             trace!("Attempting to read {:?}", path);
             if path.is_file() {
                 let mut file = match tokio::fs::File::open(&path).await {

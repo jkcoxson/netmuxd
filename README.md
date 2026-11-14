@@ -88,6 +88,21 @@ ship the package with a Microsoft-attestation signature for production.
 
 Options can be listed with ``--help``
 
+### Network devices on another subnet
+
+If netmuxd and the device are on different subnets (for example, mDNS is
+bridged by a reflector on the router), discovery will work but the device
+will drop the connection, which shows up as a "broken pipe" error. The
+device only accepts these connections from clients on its own subnet.
+
+To fix this, add a source NAT rule on the router so netmuxd's traffic to the
+device appears to come from the router's address on the device's subnet:
+
+- Source: netmuxd host IP
+- Destination: device IP
+- Protocol: TCP, any port
+- Translation: router IP on the device's subnet
+
 ## License
 
 This code is licensed under the LGPL 2.1 license. You may use netmuxd's

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop netmuxd.service || true
+        systemctl disable netmuxd.service || true
+    fi
+fi
+
+exit 0

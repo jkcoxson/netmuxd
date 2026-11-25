@@ -423,7 +423,17 @@ async fn handle_stream(
                     return;
                 }
             };
-            trace!("Recv'd plist: {parsed:#?}");
+            // Pairing requests contain private keys. Log routing metadata only,
+            // including when a customer enables trace-level diagnostics.
+            trace!(
+                "usbmuxd request type={:?} tag={} bytes={}",
+                parsed
+                    .plist
+                    .get("MessageType")
+                    .and_then(plist::Value::as_string),
+                parsed.tag,
+                packet_size,
+            );
 
             // Decode the standard usbmuxd requests via idevice. netmuxd's own
             // AddDevice/RemoveDevice extensions aren't part of the standard
@@ -455,7 +465,7 @@ async fn handle_stream(
                                 .unwrap(),
                                 idevice::usbmuxd::UsbmuxdConnection::XML_PLIST_VERSION,
                                 idevice::usbmuxd::UsbmuxdConnection::PLIST_MESSAGE_TYPE,
-                                0,
+                                parsed.tag,
                             )
                             .into();
                             if let Err(e) = socket.write_all(&res).await {
@@ -477,7 +487,10 @@ async fn handle_stream(
                                             return;
                                         }
                                     }
-                                    Err(e) => warn!("Failed forwarding {other} to upstream: {e}"),
+                                    Err(e) => {
+                                        warn!("Failed forwarding {other} to upstream: {e}");
+                                        return;
+                                    }
                                 }
                                 continue;
                             }
@@ -491,8 +504,6 @@ async fn handle_stream(
                     return;
                 }
             };
-
-            trace!("usbmuxd client sent {request:?}");
 
             match request {
                 //////////////////////////////
@@ -604,8 +615,9 @@ async fn handle_stream(
                     device_id,
                     pair_record_data,
                 } => {
-                    // Forward to upstream when possible; fall back to writing
-                    // our own lockdown storage if it's unreachable.
+                    // In shim mode Apple owns pairing storage. A lost reply may
+                    // follow a successful write; never retry it against a second
+                    // store or report success for a different host identity.
                     if let Some(addr) = upstream.as_ref() {
                         match upstream::forward_to_upstream(addr, &buffer).await {
                             Ok(frame) => {
@@ -615,9 +627,14 @@ async fn handle_stream(
                                 }
                                 continue;
                             }
-                            Err(e) => warn!(
-                                "Upstream SavePairRecord failed ({e}); writing local pairing storage"
-                            ),
+                            Err(e) => {
+                                warn!("Upstream SavePairRecord failed ({e})");
+                                let response: Vec<u8> = UsbmuxdServerResponse::Result(1)
+                                    .into_packet(parsed.tag)
+                                    .into();
+                                let _ = socket.write_all(&response).await;
+                                return;
+                            }
                         }
                     }
                     let udid = match pair_record_id {
@@ -1051,69 +1068,14 @@ impl Drop for AbortOnDrop {
 /// into the returned channel, reconnecting with capped backoff whenever the
 /// upstream stream drops. The returned guard aborts the task when dropped (when
 /// the client's Listen session ends).
-fn spawn_upstream_listen(
-    addr: UsbmuxdAddr,
-) -> (tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>, AbortOnDrop) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let handle = tokio::spawn(upstream_listen_pump(addr, tx));
-    (rx, AbortOnDrop(handle))
-}
-
-async fn upstream_listen_pump(addr: UsbmuxdAddr, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
-    use std::time::Duration;
-    const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
-    const MAX_BACKOFF: Duration = Duration::from_secs(5);
-
-    let mut backoff = INITIAL_BACKOFF;
-    loop {
-        match open_upstream_listen(&addr).await {
-            Ok(mut up) => {
-                info!("Upstream Listen stream connected");
-                backoff = INITIAL_BACKOFF;
-                loop {
-                    match upstream::read_frame(&mut *up).await {
-                        Ok(frame) => {
-                            // Stop for good once the client's Listen session
-                            // ends (the receiver was dropped).
-                            if tx.send(frame).is_err() {
-                                return;
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Upstream Listen stream dropped ({e:?}); reconnecting");
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => warn!("Upstream Listen connect failed ({e}); retrying in {backoff:?}"),
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
-    }
-}
-
-/// Open a connection to upstream, send `Listen`, and consume the handshake
-/// `Result` frame so only attach/detach frames remain.
-async fn open_upstream_listen(addr: &UsbmuxdAddr) -> Result<Box<dyn idevice::ReadWrite>, String> {
-    let mut up = upstream::connect(addr).await?;
-    let mut p = plist::Dictionary::new();
-    p.insert("MessageType".into(), "Listen".into());
-    let listen_pkt: Vec<u8> = RawPacket::new(p, 1, 8, 0).into();
-    up.write_all(&listen_pkt)
-        .await
-        .map_err(|e| format!("write Listen to upstream: {e:?}"))?;
-    upstream::read_frame(&mut *up)
-        .await
-        .map_err(|e| format!("read upstream Listen result: {e:?}"))?;
-    Ok(up)
+fn spawn_upstream_listen(addr: UsbmuxdAddr) -> (tokio::sync::mpsc::Receiver<Vec<u8>>, AbortOnDrop) {
+    let (rx, task) = upstream::spawn_listener(addr);
+    (rx, AbortOnDrop(task))
 }
 
 /// Await the next upstream frame, or never resolve when there is no upstream
 /// subscription (so the `select!` branch stays idle in non-shim mode).
-async fn next_upstream(
-    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
-) -> Option<Vec<u8>> {
+async fn next_upstream(rx: &mut Option<tokio::sync::mpsc::Receiver<Vec<u8>>>) -> Option<Vec<u8>> {
     match rx {
         Some(r) => r.recv().await,
         None => std::future::pending().await,

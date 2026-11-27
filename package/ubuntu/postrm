@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -e
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+
+    if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+        systemctl unmask usbmuxd.service 2>/dev/null || true
+    fi
+fi
+
+exit 0

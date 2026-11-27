@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -e
+
+if command -v systemctl >/dev/null 2>&1; then
+    # If usbmuxd is still present during upgrade/manual install, stop it.
+    systemctl stop usbmuxd.service 2>/dev/null || true
+    systemctl disable usbmuxd.service 2>/dev/null || true
+    systemctl mask usbmuxd.service 2>/dev/null || true
+
+    systemctl daemon-reload || true
+    systemctl enable netmuxd.service || true
+
+    if systemctl is-system-running >/dev/null 2>&1; then
+        systemctl restart netmuxd.service || true
+    fi
+fi
+
+exit 0
